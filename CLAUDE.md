@@ -1,14 +1,14 @@
-# @sirrvault/node — Claude Development Guide
+# @sirrlock/node — Claude Development Guide
 
 ## Purpose
 
 Node.js client and npx CLI for the Sirr HTTP API.
-Published to npm as `@sirrvault/node`. Zero production dependencies — uses native `fetch`.
+Published to npm as `@sirrlock/node`. Zero production dependencies — uses native `fetch`.
 
 ## What Lives Here
 
 - `src/index.ts` — `SirrClient` class and `SirrError` (the library)
-- `src/cli.ts` — CLI entrypoint (`npx @sirrvault/node push ...`)
+- `src/cli.ts` — CLI entrypoint (`npx @sirrlock/node push ...`)
 - `src/index.test.ts` — unit tests (SirrClient, SirrError, validation, resilience)
 - `src/cli.test.ts` — CLI arg parser tests
 
@@ -73,7 +73,7 @@ Matrix: Node 18, 20, 22. Steps: install → lint → build → test.
 
 ## Relationship to sirr/
 
-This repo was extracted from `sirr/packages/node/`. The MCP server (`@sirrvault/mcp`)
+This repo was extracted from `sirr/packages/node/`. The MCP server (`@sirrlock/mcp`)
 remains in the [sirrlock/sirr](https://github.com/sirrlock/sirr) monorepo
 because it is co-released with the server binary. This client has an independent
 release cadence once the HTTP API stabilises.

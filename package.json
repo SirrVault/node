@@ -1,9 +1,9 @@
 {
-  "name": "@sirrvault/node",
+  "name": "@sirrlock/node",
   "version": "0.1.0",
   "description": "Sirr (سر) — Node.js client and npx CLI for the ephemeral secret vault",
   "license": "MIT",
-  "author": "SirrVault",
+  "author": "sirrlock",
   "homepage": "https://github.com/sirrlock/node#readme",
   "repository": {
     "type": "git",

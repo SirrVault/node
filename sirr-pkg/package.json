@@ -1,7 +1,7 @@
   {
-    "name": "@sirrvault/sirr",
+    "name": "@sirrlock/sirr",
     "version": "0.1.0",
-    "description": "Sirr ephemeral secret vault — CLI (npx @sirrvault/sirr push KEY=value)",
+    "description": "Sirr ephemeral secret vault — CLI (npx @sirrlock/sirr push KEY=value)",
     "license": "MIT",
     "bin": { "sirr": "./cli.js" },
     "engines": { "node": ">=18" },

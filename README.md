@@ -1,8 +1,8 @@
-# @sirrvault/node
+# @sirrlock/node
 
 [![CI](https://github.com/sirrlock/node/actions/workflows/ci.yml/badge.svg)](https://github.com/sirrlock/node/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@sirrvault/node)](https://www.npmjs.com/package/@sirrvault/node)
-[![npm downloads](https://img.shields.io/npm/dm/@sirrvault/node)](https://www.npmjs.com/package/@sirrvault/node)
+[![npm](https://img.shields.io/npm/v/@sirrlock/node)](https://www.npmjs.com/package/@sirrlock/node)
+[![npm downloads](https://img.shields.io/npm/dm/@sirrlock/node)](https://www.npmjs.com/package/@sirrlock/node)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -14,13 +14,13 @@ Give AI agents exactly the credentials they need, for exactly as long as they ne
 ## Install
 
 ```bash
-npm install @sirrvault/node
+npm install @sirrlock/node
 ```
 
 Or use without installing:
 
 ```bash
-npx @sirrvault/node push DB_URL="postgres://..." --reads 1 --ttl 1h
+npx @sirrlock/node push DB_URL="postgres://..." --reads 1 --ttl 1h
 ```
 
 ## CLI
@@ -51,7 +51,7 @@ export SIRR_TOKEN=your-master-key
 ## Programmatic API
 
 ```typescript
-import { SirrClient, SirrError } from '@sirrvault/node'
+import { SirrClient, SirrError } from '@sirrlock/node'
 
 const sirr = new SirrClient({
   server: process.env.SIRR_SERVER ?? 'http://localhost:8080',
@@ -83,7 +83,7 @@ const list = await sirr.list()
 ### Error Handling
 
 ```typescript
-import { SirrError } from '@sirrvault/node'
+import { SirrError } from '@sirrlock/node'
 
 try {
   await sirr.push('KEY', 'value')
@@ -144,7 +144,7 @@ beforeAll(async () => {
 | Package | Description |
 |---------|-------------|
 | [sirr](https://github.com/sirrlock/sirr) | Rust monorepo: `sirrd` server + `sirr` CLI |
-| [@sirrvault/mcp](https://github.com/sirrlock/mcp) | MCP server for AI assistants |
+| [@sirrlock/mcp](https://github.com/sirrlock/mcp) | MCP server for AI assistants |
 | [sirr (PyPI)](https://github.com/sirrlock/python) | Python SDK |
 | [Sirr.Client (NuGet)](https://github.com/sirrlock/dotnet) | .NET SDK |
 | [sirr.dev](https://sirr.dev) | Documentation |

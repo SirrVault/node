@@ -1,5 +1,5 @@
 /**
- * @sirrvault/node — Sirr Node.js client
+ * @sirrlock/node — Sirr Node.js client
  *
  * Thin fetch wrapper around the Sirr HTTP API.
  * No native dependencies. Works in Node 18+.
