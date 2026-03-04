@@ -33,7 +33,7 @@ sirr push DB_URL="postgres://..." --reads 1 --ttl 1h
 sirr get DB_URL
 
 # Push entire .env — expires in 24h
-sirr push .env --ttl 24h   # not yet implemented, use key=value form
+sirr push .env --ttl 24h
 
 # Manage
 sirr list
@@ -44,7 +44,7 @@ sirr health
 
 Config via env vars:
 ```bash
-export SIRR_SERVER=http://localhost:8080
+export SIRR_SERVER=http://localhost:39999
 export SIRR_TOKEN=your-master-key
 ```
 
@@ -54,7 +54,7 @@ export SIRR_TOKEN=your-master-key
 import { SirrClient, SirrError } from '@sirrlock/node'
 
 const sirr = new SirrClient({
-  server: process.env.SIRR_SERVER ?? 'http://localhost:8080',
+  server: process.env.SIRR_SERVER ?? 'http://localhost:39999',
   token: process.env.SIRR_TOKEN!,
 })
 
@@ -87,7 +87,7 @@ secret, audit, webhook, and prune operations under that org:
 
 ```typescript
 const sirr = new SirrClient({
-  server: 'http://localhost:8080',
+  server: 'http://localhost:39999',
   token: process.env.SIRR_TOKEN!,
   org: 'acme',   // all paths become /orgs/acme/...
 })
