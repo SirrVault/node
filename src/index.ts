@@ -6,7 +6,7 @@
  */
 
 export interface SirrClientOptions {
-  /** Sirr server base URL. Default: http://localhost:8080 */
+  /** Sirr server base URL. Default: http://localhost:39999 */
   server?: string;
   /** Bearer token (SIRR_MASTER_KEY on the server side). */
   token: string;

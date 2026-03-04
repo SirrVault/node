@@ -2,12 +2,12 @@
 /**
  * Sirr CLI — thin Node.js wrapper for use via `npx sirr` or `npm i -g sirr`.
  *
- * Reads SIRR_SERVER (default: http://localhost:8080) and SIRR_TOKEN.
+ * Reads SIRR_SERVER (default: http://localhost:39999) and SIRR_TOKEN.
  */
 
 import { SirrClient } from "./index";
 
-const server = process.env.SIRR_SERVER ?? "http://localhost:8080";
+const server = process.env.SIRR_SERVER ?? "http://localhost:39999";
 const token = process.env.SIRR_TOKEN ?? "";
 
 function usage(): never {
@@ -30,7 +30,7 @@ Commands:
   keys remove <id>
 
 Environment:
-  SIRR_SERVER   Server URL (default: http://localhost:8080)
+  SIRR_SERVER   Server URL (default: http://localhost:39999)
   SIRR_TOKEN    Bearer token
 `);
   process.exit(1);
