@@ -197,25 +197,18 @@ async function main() {
         if (!sub) usage();
         switch (sub) {
           case "list": {
-            const keys = await client.listApiKeys();
-            if (keys.length === 0) {
-              console.log("(no API keys)");
-            } else {
-              for (const k of keys) {
-                console.log(
-                  `  ${k.id}  ${k.label}  [${k.permissions.join(",")}]  prefix=${k.prefix ?? "*"}`,
-                );
-              }
-            }
+            // No list-keys endpoint on the server API.
+            console.log("Key listing is not supported by the server API.");
             break;
           }
           case "create": {
-            const label = args._1 as string | undefined;
-            if (!label) usage();
-            const permsArg = args.permissions as string | undefined;
-            const permissions = permsArg ? permsArg.split(",") : ["read", "write"];
-            const prefix = args.prefix as string | undefined;
-            const result = await client.createApiKey({ label, permissions, prefix });
+            const name = args._1 as string | undefined;
+            if (!name) usage();
+            const validFor = args["valid-for"] as string | undefined;
+            const result = await client.createKey({
+              name,
+              valid_for_seconds: validFor ? Number(validFor) : undefined,
+            });
             console.log("API key created");
             console.log(`  id:  ${result.id}`);
             console.log(`  key: ${result.key}`);
@@ -225,7 +218,7 @@ async function main() {
           case "remove": {
             const id = args._1 as string | undefined;
             if (!id) usage();
-            await client.deleteApiKey(id);
+            await client.deleteKey(id);
             console.log(`API key ${id} removed`);
             break;
           }

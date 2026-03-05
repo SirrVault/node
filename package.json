@@ -1,6 +1,6 @@
 {
   "name": "@sirrlock/node",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Sirr (سر) — Node.js client and npx CLI for the ephemeral secret vault",
   "license": "MIT",
   "author": "sirrlock",
@@ -41,6 +41,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "jest",
+    "test:integration": "jest --testPathPatterns=integration --testTimeout=30000",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
     "prepublishOnly": "npm run lint && npm run build && npm test"

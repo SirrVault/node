@@ -9,78 +9,21 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write  # required for npm trusted publisher (OIDC)
-    env:
-      RUN_NUMBER: ${{ github.run_number }}
+      id-token: write   # for npm provenance
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
           cache: npm
-
+          registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run lint
       - run: npm run build
       - run: npm test
-
-      - name: Set version
-        run: |
-          VER="1.0.${RUN_NUMBER}"
-          npm version "$VER" --no-git-tag-version
-          echo "VERSION=$VER" >> "$GITHUB_ENV"
-
-      # ── @sirrlock/node (SDK + CLI) ──────────────────────────────────────────────
-
-      - name: Check if @sirrlock/node version already published
-        id: node-check
-        run: |
-          if npm view "@sirrlock/node@${VERSION}" version 2>/dev/null; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish @sirrlock/node
-        if: steps.node-check.outputs.skip == 'false'
-        run: npm publish --access public --provenance
-
-      # ── @sirrlock/sirr (bundled CLI) ────────────────────────────────────────
-
-      - name: Check if @sirrlock/sirr version already published
-        id: sirr-check
-        run: |
-          if npm view "@sirrlock/sirr@${VERSION}" version 2>/dev/null; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Bundle CLI for @sirrlock/sirr package
-        if: steps.sirr-check.outputs.skip == 'false'
-        run: |
-          mkdir -p sirr-pkg
-          ./node_modules/.bin/esbuild src/cli.ts \
-            --bundle --platform=node --target=node18 \
-            --banner:js='#!/usr/bin/env node' \
-            --outfile=sirr-pkg/cli.js
-          cat > sirr-pkg/package.json << EOF
-          {
-            "name": "@sirrlock/sirr",
-            "version": "${VERSION}",
-            "description": "Sirr ephemeral secret vault — CLI (npx @sirrlock/sirr push KEY=value)",
-            "license": "MIT",
-            "bin": { "sirr": "./cli.js" },
-            "engines": { "node": ">=18" },
-            "keywords": ["sirr", "secrets", "ephemeral", "vault", "cli", "ai-agents", "mcp"],
-            "homepage": "https://sirr.dev",
-            "repository": { "type": "git", "url": "https://github.com/SirrVault/node" }
-          }
-          EOF
-
-      - name: Publish @sirrlock/sirr
-        if: steps.sirr-check.outputs.skip == 'false'
-        run: npm publish --access public --provenance
-        working-directory: sirr-pkg
+      - name: Stamp version 1.0.${{ github.run_number }}
+        run: npm version 1.0.${{ github.run_number }} --no-git-tag-version
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

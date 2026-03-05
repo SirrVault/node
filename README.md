@@ -1,10 +1,12 @@
 # @sirrlock/node
 
-[![CI](https://github.com/sirrlock/node/actions/workflows/ci.yml/badge.svg)](https://github.com/sirrlock/node/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@sirrlock/node)](https://www.npmjs.com/package/@sirrlock/node)
+[![npm version](https://img.shields.io/npm/v/@sirrlock/node)](https://www.npmjs.com/package/@sirrlock/node)
 [![npm downloads](https://img.shields.io/npm/dm/@sirrlock/node)](https://www.npmjs.com/package/@sirrlock/node)
+[![CI](https://github.com/sirrlock/node/actions/workflows/ci.yml/badge.svg)](https://github.com/sirrlock/node/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
+[![GitHub stars](https://img.shields.io/github/stars/sirrlock/node)](https://github.com/sirrlock/node)
+[![Last commit](https://img.shields.io/github/last-commit/sirrlock/node)](https://github.com/sirrlock/node)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Node.js client and npx CLI for [Sirr](https://github.com/sirrlock/sirr) — ephemeral secret management.**
@@ -58,10 +60,16 @@ const sirr = new SirrClient({
   token: process.env.SIRR_TOKEN!,
 })
 
-// Push a one-time secret
+// Push a one-time secret (burned after first read)
 await sirr.push('API_KEY', 'sk-...', { ttl: 3600, reads: 1 })
 
-// Retrieve — null if burned or expired
+// Push a persistent secret (survives reads; patchable)
+await sirr.push('DB_URL', 'postgres://...', { ttl: 86400, burnOnRead: false })
+
+// Update TTL or value in place (only works if burnOnRead: false)
+const meta = await sirr.patch('DB_URL', { ttl: 172800 })
+
+// Retrieve — null if burned, expired, or sealed
 const value = await sirr.get('API_KEY')
 
 // Pull all secrets into a plain object
@@ -72,6 +80,10 @@ await sirr.withSecrets(async () => {
   // process.env.API_KEY is set here
   await runAgentTask()
 })
+
+// Inspect metadata without consuming a read (HEAD request)
+const status = await sirr.check('API_KEY')
+// { status: 'active', readCount: 0, readsRemaining: 1, burnOnRead: true, ... }
 
 // Delete immediately
 await sirr.delete('API_KEY')
@@ -95,7 +107,7 @@ const sirr = new SirrClient({
 // These now hit /orgs/acme/secrets, /orgs/acme/audit, etc.
 await sirr.push('DB_URL', 'postgres://...', { reads: 1 })
 const secrets = await sirr.list()
-const events = await sirr.getAuditLog()
+const events = await sirr.audit()
 ```
 
 Without `org`, the client behaves exactly as before (`/secrets`, `/audit`, etc.).
@@ -105,31 +117,40 @@ Without `org`, the client behaves exactly as before (`/secrets`, `/audit`, etc.)
 Manage the current principal's profile and API keys:
 
 ```typescript
-const profile = await sirr.me()                        // GET /me
-await sirr.updateMe({ name: 'alice' })                 // PATCH /me
-const key = await sirr.createKey({ label: 'ci' })      // POST /me/keys
-await sirr.deleteKey(key.id)                            // DELETE /me/keys/{id}
+const profile = await sirr.me()                                // GET /me
+await sirr.updateMe({ metadata: { team: 'platform' } })       // PATCH /me
+const key = await sirr.createKey({ name: 'ci' })              // POST /me/keys
+const revoked = await sirr.deleteKey(key.id)                   // DELETE /me/keys/{id} → boolean
 ```
 
 #### Admin endpoints (master key only)
 
-Manage orgs, principals, and roles:
+Manage orgs, principals, and roles. Available both as flat methods and through
+namespaced sub-clients (`sirr.orgs.*`, `sirr.principals.*`, `sirr.webhooks.*`):
 
 ```typescript
 // Orgs
-await sirr.createOrg({ slug: 'acme' })     // POST /orgs
-await sirr.listOrgs()                       // GET /orgs
-await sirr.deleteOrg('org_1')               // DELETE /orgs/{orgId}
+const org = await sirr.orgs.create({ name: 'acme' })  // or sirr.createOrg(...)
+const orgs = await sirr.orgs.list()                    // returns Org[]
+await sirr.orgs.delete(org.id)
 
 // Principals
-await sirr.createPrincipal('org_1', { name: 'alice', role: 'admin' })
-await sirr.listPrincipals('org_1')
-await sirr.deletePrincipal('org_1', 'p_1')
+const p = await sirr.principals.create(org.id, { name: 'alice', role: 'writer' })
+const principals = await sirr.principals.list(org.id)  // returns Principal[]
+await sirr.principals.delete(org.id, p.id)
 
-// Roles
-await sirr.createRole('org_1', { name: 'reader', permissions: ['read'] })
-await sirr.listRoles('org_1')
-await sirr.deleteRole('org_1', 'reader')
+// Roles — permissions is a letter string, not an array
+await sirr.createRole(org.id, { name: 'reader', permissions: 'rRlL' })
+await sirr.listRoles(org.id)
+await sirr.deleteRole(org.id, 'reader')
+
+// Webhooks
+const wh = await sirr.webhooks.create('https://example.com/hook')
+const webhooks = await sirr.webhooks.list()
+await sirr.webhooks.delete(wh.id)
+
+// Audit log
+const events = await sirr.audit({ action: 'secret.read', limit: 50 })
 ```
 
 ### Error Handling
