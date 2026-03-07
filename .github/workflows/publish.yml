@@ -1,0 +1,44 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required: npm exchanges this for a short-lived publish token (OIDC trusted publisher)
+    steps:
+      - uses: actions/checkout@v4
+
+      # No registry-url here — setup-node writes an .npmrc expecting NODE_AUTH_TOKEN,
+      # which conflicts with OIDC auth. OIDC needs a clean environment.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+
+      - name: Stamp version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: npm version "1.0.${RUN_NUMBER}" --no-git-tag-version
+
+      # npm detects ACTIONS_ID_TOKEN_REQUEST_TOKEN in the environment and exchanges
+      # the GitHub OIDC token for a granular npm publish token automatically.
+      # No NPM_TOKEN secret needed.
+      #
+      # One-time setup required on npmjs.com before first automated publish:
+      #   @sirrlock/node → Settings → Publishing → Trusted Publishers
+      #   Repository: sirrlock/node   Workflow: publish.yml   Environment: (none)
+      #
+      # First-ever publish (package does not exist yet on npm) must be done manually:
+      #   npm publish --access public
+      - name: Publish to npm
+        run: npm publish --provenance --access public

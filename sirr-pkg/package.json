@@ -1,0 +1,11 @@
+  {
+    "name": "@sirrlock/sirr",
+    "version": "0.1.0",
+    "description": "Sirr ephemeral secret vault — CLI (npx @sirrlock/sirr push KEY=value)",
+    "license": "MIT",
+    "bin": { "sirr": "./cli.js" },
+    "engines": { "node": ">=18" },
+    "keywords": ["sirr", "secrets", "ephemeral", "vault", "cli", "ai-agents", "mcp"],
+    "homepage": "https://sirr.dev",
+    "repository": { "type": "git", "url": "https://github.com/sirrlock/node" }
+  }

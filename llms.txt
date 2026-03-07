@@ -1,0 +1,34 @@
+# @sirrlock/node — Sirr Node.js SDK
+
+TypeScript/JavaScript client for the Sirr ephemeral secret vault HTTP API.
+Published to npm as `@sirrlock/node`. Zero production dependencies, native fetch.
+ESM + CJS output. Node 18+.
+
+## Install
+
+npm install @sirrlock/node
+
+## Usage
+
+import { SirrClient } from '@sirrlock/node'
+
+const client = new SirrClient({ server: 'http://localhost:39999', token: 'your-key' })
+
+await client.push('DB_PASSWORD', 's3cr3t', { ttl: 3600, reads: 1 })
+const value = await client.get('DB_PASSWORD')   // null if burned/expired
+await client.delete('DB_PASSWORD')
+const secrets = await client.list()
+const all = await client.pullAll()              // { KEY: 'value', ... }
+await client.withSecrets(async () => { /* process.env populated */ })
+await client.prune()
+await client.health()
+
+## Errors
+
+- get() returns null on 404 (burned/expired) — never throws for not-found
+- All other non-2xx responses throw SirrError (has .status number)
+- Constructor throws if token is empty
+
+## Source
+
+github.com/sirrlock/node

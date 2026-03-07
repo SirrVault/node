@@ -1,0 +1,67 @@
+{
+  "name": "@sirrlock/node",
+  "version": "1.0.0",
+  "description": "Sirr (سر) — Node.js client and npx CLI for the ephemeral secret vault",
+  "license": "MIT",
+  "author": "sirrlock",
+  "homepage": "https://github.com/sirrlock/node#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sirrlock/node"
+  },
+  "bugs": {
+    "url": "https://github.com/sirrlock/node/issues"
+  },
+  "keywords": [
+    "sirr",
+    "secrets",
+    "ephemeral",
+    "vault",
+    "secret-management",
+    "burn-after-reading",
+    "ai-agents",
+    "mcp"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "bin": {
+    "sirr": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "test:integration": "jest --testPathIgnorePatterns /node_modules/ /dist/ --testPathPattern integration --testTimeout=30000",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "prepublishOnly": "npm run lint && npm run build && npm test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
+    "@jest/globals": "^30.0.0",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.25.0",
+    "jest": "^30.0.0",
+    "ts-jest": "^29.0.0",
+    "typescript": "^5.4.0"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testPathIgnorePatterns": ["/node_modules/", "/dist/", "integration\\.test"]
+  }
+}
