@@ -7,7 +7,7 @@
   "homepage": "https://github.com/sirrlock/node#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sirrlock/node"
+    "url": "git+https://github.com/sirrlock/node.git"
   },
   "bugs": {
     "url": "https://github.com/sirrlock/node/issues"
@@ -62,6 +62,10 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "testPathIgnorePatterns": ["/node_modules/", "/dist/", "integration\\.test"]
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/dist/",
+      "integration\\.test"
+    ]
   }
 }
