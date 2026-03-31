@@ -2,36 +2,39 @@
 /**
  * Sirr CLI — thin Node.js wrapper for use via `npx sirr` or `npm i -g sirr`.
  *
- * Reads SIRR_SERVER (default: http://localhost:39999) and SIRR_TOKEN.
+ * Reads SIRR_SERVER (default: http://localhost:39999), SIRR_TOKEN, and SIRR_ORG.
  */
 
-import { SirrClient } from "./index";
+import { SecretExistsError, SirrClient } from "./index";
 
 const server = process.env.SIRR_SERVER ?? "http://localhost:39999";
 const token = process.env.SIRR_TOKEN ?? "";
+const envOrg = process.env.SIRR_ORG;
 
 function usage(): never {
   console.error(`
 Usage: sirr <command> [options]
 
 Commands:
-  push KEY=value [--ttl <secs>] [--reads <n>]
-  get KEY
+  push <value> [--ttl <secs>] [--reads <n>]
+  set KEY=value [--org <org>] [--ttl <secs>] [--reads <n>]
+  get <id|KEY> [--org <org>]
   list
   delete KEY
   prune
   health
-  audit [--since <ts>] [--action <action>] [--limit <n>]
+  audit [--since <ts>] [--action <action>] [--key <key>] [--limit <n>]
   webhooks list
   webhooks add <url> [--events <csv>]
   webhooks remove <id>
   keys list
-  keys create <label> [--permissions <csv>]
+  keys create <label> [--valid-for <secs>]
   keys remove <id>
 
 Environment:
   SIRR_SERVER   Server URL (default: http://localhost:39999)
   SIRR_TOKEN    Bearer token
+  SIRR_ORG      Default org (used by set/get when --org is not passed)
 `);
   process.exit(1);
 }
@@ -64,7 +67,7 @@ async function main() {
   if (!subcmd) usage();
 
   const args = parseArgs(rest);
-  const client = new SirrClient({ server, token });
+  const client = new SirrClient({ server, token, org: envOrg });
 
   try {
     switch (subcmd) {
@@ -75,30 +78,46 @@ async function main() {
       }
 
       case "push": {
+        const value = args._0 as string | undefined;
+        if (!value) usage();
+        const ttlArg = args.ttl as string | undefined;
+        const readsArg = args.reads as string | undefined;
+        const result = await client.push(value, {
+          ttl: ttlArg ? Number.parseInt(ttlArg, 10) : undefined,
+          reads: readsArg ? Number.parseInt(readsArg, 10) : undefined,
+        });
+        console.log(`✓ pushed — id: ${result.id}`);
+        break;
+      }
+
+      case "set": {
         const target = args._0 as string | undefined;
         if (!target) usage();
         const ttlArg = args.ttl as string | undefined;
         const readsArg = args.reads as string | undefined;
+        const orgArg = args.org as string | undefined;
 
         if (!target.includes("=")) {
-          console.error("push: expected KEY=value");
+          console.error("set: expected KEY=value");
           process.exit(1);
         }
         const eqIdx = target.indexOf("=");
         const key = target.slice(0, eqIdx);
         const value = target.slice(eqIdx + 1);
-        await client.push(key, value, {
+        const result = await client.set(key, value, {
+          org: orgArg,
           ttl: ttlArg ? Number.parseInt(ttlArg, 10) : undefined,
           reads: readsArg ? Number.parseInt(readsArg, 10) : undefined,
         });
-        console.log(`✓ pushed ${key}`);
+        console.log(`✓ set ${result.key}`);
         break;
       }
 
       case "get": {
-        const key = args._0 as string | undefined;
-        if (!key) usage();
-        const value = await client.get(key);
+        const idOrKey = args._0 as string | undefined;
+        if (!idOrKey) usage();
+        const orgArg = args.org as string | undefined;
+        const value = await client.get(idOrKey, { org: orgArg });
         if (value === null) {
           console.error("not found or expired");
           process.exit(1);
@@ -139,6 +158,7 @@ async function main() {
         const events = await client.getAuditLog({
           since: args.since ? Number(args.since) : undefined,
           action: args.action as string | undefined,
+          key: args.key as string | undefined,
           limit: args.limit ? Number(args.limit) : undefined,
         });
         if (events.length === 0) {
@@ -232,6 +252,10 @@ async function main() {
         usage();
     }
   } catch (e: unknown) {
+    if (e instanceof SecretExistsError) {
+      console.error(`conflict: ${(e as Error).message}`);
+      process.exit(2);
+    }
     console.error((e as Error).message ?? String(e));
     process.exit(1);
   }

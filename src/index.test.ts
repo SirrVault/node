@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { SirrClient, SirrError } from "./index";
+import { SecretExistsError, SirrClient, SirrError } from "./index";
 
 const mockFetch = jest.fn<typeof fetch>();
 global.fetch = mockFetch;
@@ -67,8 +67,8 @@ describe("constructor", () => {
 
   it("strips trailing slash from server", async () => {
     const c = new SirrClient({ server: "http://example.com/", token: "t" });
-    mockFetch.mockResolvedValueOnce(ok({ key: "X" }));
-    await c.push("X", "v");
+    mockFetch.mockResolvedValueOnce(ok({ id: "abc123" }));
+    await c.push("v");
     const [url] = mockFetch.mock.calls[0] as [string];
     expect(url).toBe("http://example.com/secrets");
   });
@@ -77,12 +77,17 @@ describe("constructor", () => {
 // ── Key validation ─────────────────────────────────────────
 
 describe("key validation", () => {
-  it("push throws on empty key", async () => {
-    await expect(sirr.push("", "val")).rejects.toThrow("key must not be empty");
+  it("set throws on empty key", async () => {
+    const orgSirr = new SirrClient({
+      server: "http://localhost:39999",
+      token: "test",
+      org: "acme",
+    });
+    await expect(orgSirr.set("", "val")).rejects.toThrow("key must not be empty");
   });
 
-  it("get throws on empty key", async () => {
-    await expect(sirr.get("")).rejects.toThrow("key must not be empty");
+  it("get throws on empty id/key", async () => {
+    await expect(sirr.get("")).rejects.toThrow("must not be empty");
   });
 
   it("delete throws on empty key", async () => {
@@ -122,15 +127,65 @@ describe("health", () => {
   });
 });
 
-// ── push ───────────────────────────────────────────────────
+// ── push (public dead-drop) ────────────────────────────────
 
 describe("push", () => {
-  it("sends POST /secrets with correct body", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ key: "FOO" }));
-    await sirr.push("FOO", "bar", { ttl: 60, reads: 1 });
+  it("sends POST /secrets with value-only body", async () => {
+    mockFetch.mockResolvedValueOnce(ok({ id: "deadbeef".repeat(8) }));
+    const result = await sirr.push("bar", { ttl: 60, reads: 1 });
 
     const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://localhost:39999/secrets");
+    expect(opts.method).toBe("POST");
+    expect(JSON.parse(opts.body as string)).toEqual({
+      value: "bar",
+      ttl_seconds: 60,
+      max_reads: 1,
+    });
+    expect(result.id).toBe("deadbeef".repeat(8));
+  });
+
+  it("does NOT include key in body", async () => {
+    mockFetch.mockResolvedValueOnce(ok({ id: "abc" }));
+    await sirr.push("secret");
+    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(opts.body as string) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("key");
+  });
+
+  it("sends null for omitted ttl and reads", async () => {
+    mockFetch.mockResolvedValueOnce(ok({ id: "abc" }));
+    await sirr.push("bar");
+    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(opts.body as string)).toMatchObject({
+      ttl_seconds: null,
+      max_reads: null,
+    });
+  });
+
+  it("returns id from response", async () => {
+    const id = "a".repeat(64);
+    mockFetch.mockResolvedValueOnce(ok({ id }));
+    const result = await sirr.push("val");
+    expect(result).toEqual({ id });
+  });
+});
+
+// ── set (org-scoped named secret) ─────────────────────────
+
+describe("set", () => {
+  const orgSirr = new SirrClient({
+    server: "http://localhost:39999",
+    token: "test",
+    org: "acme",
+  });
+
+  it("sends POST /orgs/{org}/secrets with key+value", async () => {
+    mockFetch.mockResolvedValueOnce(ok({ key: "FOO" }));
+    const result = await orgSirr.set("FOO", "bar", { ttl: 60, reads: 1 });
+
+    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://localhost:39999/orgs/acme/secrets");
     expect(opts.method).toBe("POST");
     expect(JSON.parse(opts.body as string)).toEqual({
       key: "FOO",
@@ -138,24 +193,92 @@ describe("push", () => {
       ttl_seconds: 60,
       max_reads: 1,
     });
+    expect(result).toEqual({ key: "FOO" });
   });
 
   it("sends null for omitted ttl and reads", async () => {
     mockFetch.mockResolvedValueOnce(ok({ key: "FOO" }));
-    await sirr.push("FOO", "bar");
+    await orgSirr.set("FOO", "bar");
     const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(opts.body as string)).toMatchObject({
       ttl_seconds: null,
       max_reads: null,
     });
   });
+
+  it("throws SecretExistsError on 409 Conflict", async () => {
+    mockFetch.mockResolvedValueOnce(
+      err(409, { error: "secret_exists", message: "Key already exists" }),
+    );
+    const thrown = await orgSirr.set("FOO", "bar").catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(SecretExistsError);
+    expect((thrown as SecretExistsError).message).toContain("already exists");
+  });
+
+  it("SecretExistsError includes the key name", async () => {
+    mockFetch.mockResolvedValueOnce(
+      err(409, { error: "secret_exists", message: "Key already exists" }),
+    );
+    try {
+      await orgSirr.set("MY_KEY", "v");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SecretExistsError);
+      expect((e as SecretExistsError).message).toContain("MY_KEY");
+    }
+  });
+
+  it("re-throws non-409 errors as SirrError", async () => {
+    mockFetch.mockResolvedValueOnce(err(500, { error: "internal error" }));
+    await expect(orgSirr.set("FOO", "bar")).rejects.toThrow(SirrError);
+  });
+
+  it("throws when no org is configured", async () => {
+    await expect(sirr.set("FOO", "bar")).rejects.toThrow("requires an org");
+  });
+
+  it("accepts org override in opts", async () => {
+    mockFetch.mockResolvedValueOnce(ok({ key: "FOO" }));
+    await sirr.set("FOO", "bar", { org: "override-org" });
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toContain("/orgs/override-org/secrets");
+  });
 });
 
 // ── get ────────────────────────────────────────────────────
 
 describe("get", () => {
+  it("routes to /secrets/{id} without org (public)", async () => {
+    const id = "a".repeat(64);
+    mockFetch.mockResolvedValueOnce(ok({ id, value: "bar" }));
+    const result = await sirr.get(id);
+    expect(result).toBe("bar");
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toBe(`http://localhost:39999/secrets/${id}`);
+  });
+
+  it("routes to /orgs/{org}/secrets/{key} with org (named)", async () => {
+    const orgSirr = new SirrClient({
+      server: "http://localhost:39999",
+      token: "test",
+      org: "acme",
+    });
+    mockFetch.mockResolvedValueOnce(ok({ value: "secret-val" }));
+    const result = await orgSirr.get("MY_KEY");
+    expect(result).toBe("secret-val");
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toBe("http://localhost:39999/orgs/acme/secrets/MY_KEY");
+  });
+
+  it("accepts org override in opts", async () => {
+    mockFetch.mockResolvedValueOnce(ok({ value: "v" }));
+    await sirr.get("MY_KEY", { org: "other-org" });
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toContain("/orgs/other-org/secrets/MY_KEY");
+  });
+
   it("returns value on 200", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ key: "FOO", value: "bar" }));
+    mockFetch.mockResolvedValueOnce(ok({ value: "bar" }));
     expect(await sirr.get("FOO")).toBe("bar");
   });
 
@@ -174,8 +297,8 @@ describe("get", () => {
     await expect(sirr.get("FOO")).rejects.toThrow("500");
   });
 
-  it("URL-encodes the key", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ key: "A B", value: "v" }));
+  it("URL-encodes the id/key", async () => {
+    mockFetch.mockResolvedValueOnce(ok({ value: "v" }));
     await sirr.get("A B");
     const [url] = mockFetch.mock.calls[0] as [string];
     expect(url).toContain("A%20B");
@@ -343,6 +466,13 @@ describe("audit", () => {
     expect(url).toContain("since=100");
     expect(url).toContain("action=secret.create");
     expect(url).toContain("limit=10");
+  });
+
+  it("sends key query param for filtering", async () => {
+    mockFetch.mockResolvedValueOnce(ok({ events: [] }));
+    await sirr.audit({ key: "MY_SECRET" });
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toContain("key=MY_SECRET");
   });
 });
 
@@ -551,9 +681,9 @@ describe("patch", () => {
 describe("org-scoped client", () => {
   const orgSirr = new SirrClient({ server: "http://localhost:39999", token: "test", org: "acme" });
 
-  it("push uses /orgs/{org}/secrets path", async () => {
+  it("set uses /orgs/{org}/secrets path", async () => {
     mockFetch.mockResolvedValueOnce(ok({ key: "FOO" }));
-    await orgSirr.push("FOO", "bar");
+    await orgSirr.set("FOO", "bar");
     const [url] = mockFetch.mock.calls[0] as [string];
     expect(url).toBe("http://localhost:39999/orgs/acme/secrets");
   });
@@ -610,8 +740,8 @@ describe("org-scoped client", () => {
 
 describe("non-org client paths", () => {
   it("push uses /secrets path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ key: "FOO" }));
-    await sirr.push("FOO", "bar");
+    mockFetch.mockResolvedValueOnce(ok({ id: "abc" }));
+    await sirr.push("bar");
     const [url] = mockFetch.mock.calls[0] as [string];
     expect(url).toBe("http://localhost:39999/secrets");
   });

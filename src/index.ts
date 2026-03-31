@@ -21,7 +21,16 @@ export interface SirrClientOptions {
 
 // ── Secret operation options ──────────────────────────────────────────────────
 
+/** Options for `push()` — anonymous public dead-drop. */
 export interface PushOptions {
+  /** Time-to-live in seconds. Omit for no expiration. */
+  ttl?: number;
+  /** Maximum reads before the secret is burned. */
+  reads?: number;
+}
+
+/** Options for `set()` — org-scoped named secret. */
+export interface SetOptions {
   /** Time-to-live in seconds. Omit for no expiration. */
   ttl?: number;
   /** Maximum reads before the secret is burned or sealed. */
@@ -41,6 +50,10 @@ export interface PushOptions {
    * Omit to allow any key with read permission.
    */
   allowedKeys?: string[];
+  /**
+   * Override the org for this call. Falls back to the client-level `org`.
+   */
+  org?: string;
 }
 
 export interface PatchOptions {
@@ -68,6 +81,18 @@ export interface SecretStatus {
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
+
+/** Response from `push()` — anonymous public dead-drop. */
+export interface PushResponse {
+  /** 64-character hex ID used to retrieve the secret via `get(id)`. */
+  id: string;
+}
+
+/** Response from `set()` — org-scoped named secret. */
+export interface SetResponse {
+  /** The key under which the secret was stored. */
+  key: string;
+}
 
 export interface SecretMeta {
   key: string;
@@ -105,6 +130,8 @@ export interface AuditFilter {
   until?: number;
   /** Filter by action type, e.g. `"secret.read"`. */
   action?: string;
+  /** Filter by secret key name (org-scoped audit only). */
+  key?: string;
   /** Maximum number of entries to return (default 100, max 1000). */
   limit?: number;
 }
@@ -279,6 +306,17 @@ export class SirrError extends Error {
   }
 }
 
+/**
+ * Thrown by `set()` when a secret with the given key already exists (HTTP 409).
+ * Delete the existing secret first, then call `set()` again.
+ */
+export class SecretExistsError extends Error {
+  constructor(key: string) {
+    super(`Key '${key}' already exists. Delete it first.`);
+    this.name = "SecretExistsError";
+  }
+}
+
 // ── Validation ────────────────────────────────────────────────────────────────
 
 function validateKey(key: string): void {
@@ -399,14 +437,41 @@ export class SirrClient {
   // ── Secrets ─────────────────────────────────────────────────────────────────
 
   /**
-   * Push a secret to the vault.
+   * Push an anonymous secret (public dead-drop).
+   *
+   * No key is required. The server assigns a random 64-char hex ID.
+   * Share the returned `id` with the recipient — they use `get(id)` to retrieve it.
+   *
+   * @param value Secret value (max 1 MiB)
+   * @param opts  TTL and read limit
+   * @returns `{ id }` — the hex ID for retrieval
+   */
+  async push(value: string, opts: PushOptions = {}): Promise<PushResponse> {
+    const body: Record<string, unknown> = {
+      value,
+      ttl_seconds: opts.ttl ?? null,
+      max_reads: opts.reads ?? null,
+    };
+    return this.request<PushResponse>("POST", "/secrets", body);
+  }
+
+  /**
+   * Store a named secret in an org vault.
+   *
+   * Requires `org` in the client config or in `opts`.
+   * Throws `SecretExistsError` if the key already exists (HTTP 409).
    *
    * @param key   Secret key name (1-256 chars, alphanumeric + `-_.`)
    * @param value Secret value (max 1 MiB)
-   * @param opts  TTL, read limit, and other options
+   * @param opts  TTL, read limit, webhook, allowed keys, and optional org override
+   * @returns `{ key }` — the stored key name
    */
-  async push(key: string, value: string, opts: PushOptions = {}): Promise<void> {
+  async set(key: string, value: string, opts: SetOptions = {}): Promise<SetResponse> {
     validateKey(key);
+    const org = opts.org ?? this.org;
+    if (!org) {
+      throw new Error("set() requires an org — pass org in SirrClientOptions or SetOptions");
+    }
     const body: Record<string, unknown> = {
       key,
       value,
@@ -416,7 +481,18 @@ export class SirrClient {
     if (opts.burnOnRead !== undefined) body.delete = opts.burnOnRead;
     if (opts.webhookUrl !== undefined) body.webhook_url = opts.webhookUrl;
     if (opts.allowedKeys !== undefined) body.allowed_keys = opts.allowedKeys;
-    await this.request("POST", this.secretsPath(), body);
+    try {
+      return await this.request<SetResponse>(
+        "POST",
+        `/orgs/${encodeURIComponent(org)}/secrets`,
+        body,
+      );
+    } catch (e) {
+      if (e instanceof SirrError && e.status === 409) {
+        throw new SecretExistsError(key);
+      }
+      throw e;
+    }
   }
 
   /**
@@ -441,14 +517,26 @@ export class SirrClient {
   }
 
   /**
-   * Retrieve a secret by key. Increments the read counter.
+   * Retrieve a secret. Increments the read counter.
+   *
+   * - **Without org** (public): `id` is the 64-char hex returned by `push()`.
+   *   Routes to `GET /secrets/{id}`.
+   * - **With org** (named): `key` is the named key stored via `set()`.
+   *   Routes to `GET /orgs/{org}/secrets/{key}`.
+   *
    * Returns `null` if the secret does not exist, has expired, has been
-   * burned (`delete: true`), or is sealed (`delete: false`, reads exhausted).
+   * burned, or is sealed.
    */
-  async get(key: string): Promise<string | null> {
-    validateKey(key);
+  async get(idOrKey: string, opts?: { org?: string }): Promise<string | null> {
+    if (!idOrKey) {
+      throw new Error("Secret key must not be empty");
+    }
+    const org = opts?.org ?? this.org;
+    const path = org
+      ? `/orgs/${encodeURIComponent(org)}/secrets/${encodeURIComponent(idOrKey)}`
+      : `/secrets/${encodeURIComponent(idOrKey)}`;
     try {
-      const data = await this.request<{ value: string }>("GET", this.secretsPath(key));
+      const data = await this.request<{ value: string }>("GET", path);
       return data.value;
     } catch (e) {
       if (e instanceof SirrError && (e.status === 404 || e.status === 410)) return null;
@@ -570,6 +658,7 @@ export class SirrClient {
     if (opts.since != null) params.set("since", String(opts.since));
     if (opts.until != null) params.set("until", String(opts.until));
     if (opts.action != null) params.set("action", opts.action);
+    if (opts.key != null) params.set("key", opts.key);
     if (opts.limit != null) params.set("limit", String(opts.limit));
     const qs = params.toString();
     const data = await this.request<{ events: AuditEvent[] }>(
