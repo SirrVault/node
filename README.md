@@ -22,20 +22,22 @@ npm install @sirrlock/node
 Or use without installing:
 
 ```bash
-npx @sirrlock/node push DB_URL="postgres://..." --reads 1 --ttl 1h
+npx @sirrlock/node push "postgres://..." --reads 1 --ttl 1h
 ```
 
 ## CLI
 
 ```bash
-# Push a secret that burns after one read
-sirr push DB_URL="postgres://..." --reads 1 --ttl 1h
+# Push a public dead drop — returns a one-time URL
+sirr push "postgres://..." --reads 1 --ttl 1h
+# → https://sirrlock.com/s/abc123
 
-# Retrieve (burns on read if reads=1)
-sirr get DB_URL
+# Set an org-scoped named secret
+sirr set DB_URL "postgres://..." --org acme --reads 3 --ttl 24h
 
-# Push entire .env — expires in 24h
-sirr push .env --ttl 24h
+# Retrieve by ID (dead drop) or key (org-scoped)
+sirr get abc123
+sirr get DB_URL --org acme
 
 # Manage
 sirr list
@@ -46,47 +48,46 @@ sirr health
 
 Config via env vars:
 ```bash
-export SIRR_SERVER=http://localhost:39999
+export SIRR_SERVER=https://sirrlock.com
 export SIRR_TOKEN=your-master-key
 ```
 
 ## Programmatic API
 
 ```typescript
-import { SirrClient, SirrError } from '@sirrlock/node'
+import { SirrClient, SirrError, SecretExistsError } from '@sirrlock/node'
 
 const sirr = new SirrClient({
-  server: process.env.SIRR_SERVER ?? 'http://localhost:39999',
+  server: process.env.SIRR_SERVER ?? 'https://sirrlock.com',
   token: process.env.SIRR_TOKEN!,
 })
 
-// Push a one-time secret (burned after first read)
-await sirr.push('API_KEY', 'sk-...', { ttl: 3600, reads: 1 })
+// Push a public dead drop — returns { id, url }
+const { id, url } = await sirr.push('sk-...', { ttl: 3600, reads: 1 })
+console.log(url)  // → https://sirrlock.com/s/abc123
 
-// Push a persistent secret (survives reads; patchable)
-await sirr.push('DB_URL', 'postgres://...', { ttl: 86400, burnOnRead: false })
+// Set an org-scoped named secret — throws SecretExistsError on conflict
+await sirr.set('DB_URL', 'postgres://...', { org: 'acme', ttl: 86400, reads: 3 })
 
-// Update TTL or value in place (only works if burnOnRead: false)
-const meta = await sirr.patch('DB_URL', { ttl: 172800 })
-
-// Retrieve — null if burned, expired, or sealed
-const value = await sirr.get('API_KEY')
+// Retrieve — routes by org presence
+const value = await sirr.get(id)                              // dead drop by ID
+const dbUrl = await sirr.get('DB_URL', { org: 'acme' })      // org-scoped by key
 
 // Pull all secrets into a plain object
 const secrets = await sirr.pullAll()
 
 // Inject all secrets as env vars for the duration of a callback
 await sirr.withSecrets(async () => {
-  // process.env.API_KEY is set here
+  // process.env.DB_URL is set here
   await runAgentTask()
 })
 
 // Inspect metadata without consuming a read (HEAD request)
-const status = await sirr.check('API_KEY')
-// { status: 'active', readCount: 0, readsRemaining: 1, burnOnRead: true, ... }
+const status = await sirr.check('DB_URL')
+// { status: 'active', readCount: 0, readsRemaining: 3, ... }
 
 // Delete immediately
-await sirr.delete('API_KEY')
+await sirr.delete('DB_URL')
 
 // List active secrets (metadata only — no values)
 const list = await sirr.list()
@@ -94,23 +95,23 @@ const list = await sirr.list()
 
 ### Multi-Tenant / Org Mode
 
-When working with a multi-tenant Sirr server, pass an `org` slug to scope all
-secret, audit, webhook, and prune operations under that org:
+Org scoping is now per-call via the `org` option on `set()` and `get()`:
 
 ```typescript
-const sirr = new SirrClient({
-  server: 'http://localhost:39999',
-  token: process.env.SIRR_TOKEN!,
-  org: 'acme',   // all paths become /orgs/acme/...
-})
+// Set an org-scoped secret
+await sirr.set('DB_URL', 'postgres://...', { org: 'acme', reads: 1 })
 
-// These now hit /orgs/acme/secrets, /orgs/acme/audit, etc.
-await sirr.push('DB_URL', 'postgres://...', { reads: 1 })
-const secrets = await sirr.list()
+// Retrieve an org-scoped secret
+const value = await sirr.get('DB_URL', { org: 'acme' })
+
+// Audit, list, and webhook calls still support org at the client level
+const sirr = new SirrClient({
+  server: 'https://sirrlock.com',
+  token: process.env.SIRR_TOKEN!,
+  org: 'acme',
+})
 const events = await sirr.audit()
 ```
-
-Without `org`, the client behaves exactly as before (`/secrets`, `/audit`, etc.).
 
 #### /me endpoints
 
@@ -156,12 +157,15 @@ const events = await sirr.audit({ action: 'secret.read', limit: 50 })
 ### Error Handling
 
 ```typescript
-import { SirrError } from '@sirrlock/node'
+import { SirrError, SecretExistsError } from '@sirrlock/node'
 
 try {
-  await sirr.push('KEY', 'value')
+  await sirr.set('DB_URL', 'postgres://...', { org: 'acme' })
 } catch (e) {
-  if (e instanceof SirrError) {
+  if (e instanceof SecretExistsError) {
+    // 409 — secret with this key already exists in the org
+    console.error('Secret already exists, use a different key or delete first')
+  } else if (e instanceof SirrError) {
     console.error(`API error ${e.status}: ${e.message}`)
   }
 }
@@ -196,9 +200,8 @@ await sirr.withSecrets(async () => {
 ### CI/CD: one-time deploy credential
 
 ```typescript
-await sirr.push('DEPLOY_TOKEN', process.env.PERMANENT_TOKEN!, { reads: 1 })
-await execa('sirr', ['run', '--', './deploy.sh'])
-// DEPLOY_TOKEN was read once and is now deleted
+const { url } = await sirr.push(process.env.PERMANENT_TOKEN!, { reads: 1 })
+// Share the URL with the deploy script — burned after one read
 ```
 
 ### pytest-style fixture for Node.js tests
