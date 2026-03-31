@@ -2,12 +2,12 @@
 /**
  * Sirr CLI — thin Node.js wrapper for use via `npx sirr` or `npm i -g sirr`.
  *
- * Reads SIRR_SERVER (default: http://localhost:39999), SIRR_TOKEN, and SIRR_ORG.
+ * Reads SIRR_SERVER (default: https://sirr.sirrlock.com), SIRR_TOKEN, and SIRR_ORG.
  */
 
 import { SecretExistsError, SirrClient } from "./index";
 
-const server = process.env.SIRR_SERVER ?? "http://localhost:39999";
+const server = process.env.SIRR_SERVER ?? "https://sirr.sirrlock.com";
 const token = process.env.SIRR_TOKEN ?? "";
 const envOrg = process.env.SIRR_ORG;
 
@@ -32,7 +32,7 @@ Commands:
   keys remove <id>
 
 Environment:
-  SIRR_SERVER   Server URL (default: http://localhost:39999)
+  SIRR_SERVER   Server URL (default: https://sirr.sirrlock.com)
   SIRR_TOKEN    Bearer token
   SIRR_ORG      Default org (used by set/get when --org is not passed)
 `);

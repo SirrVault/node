@@ -74,9 +74,8 @@ Matrix: Node 18, 20, 22. Steps: install → lint → build → test.
 ## Relationship to sirr/
 
 This repo was extracted from `sirr/packages/node/`. The MCP server (`@sirrlock/mcp`)
-remains in the [sirrlock/sirr](https://github.com/sirrlock/sirr) monorepo
-because it is co-released with the server binary. This client has an independent
-release cadence once the HTTP API stabilises.
+has its own repo at [sirrlock/mcp](https://github.com/sirrlock/mcp). This client
+has an independent release cadence once the HTTP API stabilises.
 
 ## Pre-Commit Checklist
 

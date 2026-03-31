@@ -8,7 +8,7 @@
 // ── Constructor options ───────────────────────────────────────────────────────
 
 export interface SirrClientOptions {
-  /** Sirr server base URL. Default: http://localhost:39999 */
+  /** Sirr server base URL. Default: https://sirr.sirrlock.com */
   server?: string;
   /** Bearer token — master key or principal API key. */
   token: string;
@@ -345,7 +345,7 @@ export class SirrClient {
     if (!opts.token) {
       throw new Error("SirrClient requires a non-empty token");
     }
-    this.server = (opts.server ?? "http://localhost:39999").replace(/\/$/, "");
+    this.server = (opts.server ?? "https://sirr.sirrlock.com").replace(/\/$/, "");
     this.token = opts.token;
     this.org = opts.org;
 

@@ -30,7 +30,7 @@ npx @sirrlock/node push "postgres://..." --reads 1 --ttl 1h
 ```bash
 # Push a public dead drop — returns a one-time URL
 sirr push "postgres://..." --reads 1 --ttl 1h
-# → https://sirrlock.com/s/abc123
+# → https://sirr.sirrlock.com/s/abc123
 
 # Set an org-scoped named secret
 sirr set DB_URL "postgres://..." --org acme --reads 3 --ttl 24h
@@ -48,7 +48,7 @@ sirr health
 
 Config via env vars:
 ```bash
-export SIRR_SERVER=https://sirrlock.com
+export SIRR_SERVER=https://sirr.sirrlock.com
 export SIRR_TOKEN=your-master-key
 ```
 
@@ -58,13 +58,13 @@ export SIRR_TOKEN=your-master-key
 import { SirrClient, SirrError, SecretExistsError } from '@sirrlock/node'
 
 const sirr = new SirrClient({
-  server: process.env.SIRR_SERVER ?? 'https://sirrlock.com',
+  server: process.env.SIRR_SERVER ?? 'https://sirr.sirrlock.com',
   token: process.env.SIRR_TOKEN!,
 })
 
 // Push a public dead drop — returns { id, url }
 const { id, url } = await sirr.push('sk-...', { ttl: 3600, reads: 1 })
-console.log(url)  // → https://sirrlock.com/s/abc123
+console.log(url)  // → https://sirr.sirrlock.com/s/abc123
 
 // Set an org-scoped named secret — throws SecretExistsError on conflict
 await sirr.set('DB_URL', 'postgres://...', { org: 'acme', ttl: 86400, reads: 3 })
@@ -106,7 +106,7 @@ const value = await sirr.get('DB_URL', { org: 'acme' })
 
 // Audit, list, and webhook calls still support org at the client level
 const sirr = new SirrClient({
-  server: 'https://sirrlock.com',
+  server: 'https://sirr.sirrlock.com',
   token: process.env.SIRR_TOKEN!,
   org: 'acme',
 })
