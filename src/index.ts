@@ -10,8 +10,8 @@
 export interface SirrClientOptions {
   /** Sirr server base URL. Default: https://sirr.sirrlock.com */
   server?: string;
-  /** Bearer token — master key or principal API key. */
-  token: string;
+  /** Bearer token — master key or principal API key. Omit for anonymous push. */
+  token?: string;
   /**
    * Org ID for multi-tenant mode. When set, all secret, audit, webhook, and
    * prune operations are scoped under `/orgs/{org}/`.
@@ -342,11 +342,8 @@ export class SirrClient {
   readonly principals: PrincipalClient;
 
   constructor(opts: SirrClientOptions) {
-    if (!opts.token) {
-      throw new Error("SirrClient requires a non-empty token");
-    }
     this.server = (opts.server ?? "https://sirr.sirrlock.com").replace(/\/$/, "");
-    this.token = opts.token;
+    this.token = opts.token ?? "";
     this.org = opts.org;
 
     this.webhooks = {
@@ -391,10 +388,9 @@ export class SirrClient {
   // ── HTTP helpers ────────────────────────────────────────────────────────────
 
   private headers(): Record<string, string> {
-    return {
-      Authorization: `Bearer ${this.token}`,
-      "Content-Type": "application/json",
-    };
+    const h: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.token) h.Authorization = `Bearer ${this.token}`;
+    return h;
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -769,6 +765,19 @@ export class SirrClient {
     await this.request(
       "DELETE",
       `/orgs/${encodeURIComponent(orgId)}/principals/${encodeURIComponent(principalId)}`,
+    );
+  }
+
+  /** Issue an API key for a principal. Requires master key. */
+  async createPrincipalKey(
+    orgId: string,
+    principalId: string,
+    opts: CreateKeyOptions,
+  ): Promise<PrincipalKeyCreateResult> {
+    return this.request<PrincipalKeyCreateResult>(
+      "POST",
+      `/orgs/${encodeURIComponent(orgId)}/principals/${encodeURIComponent(principalId)}/keys`,
+      opts,
     );
   }
 

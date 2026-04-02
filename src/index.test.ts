@@ -55,8 +55,9 @@ describe("SirrError", () => {
 // ── Constructor validation ─────────────────────────────────
 
 describe("constructor", () => {
-  it("throws on empty token", () => {
-    expect(() => new SirrClient({ token: "" })).toThrow("non-empty token");
+  it("allows empty token for anonymous push", () => {
+    expect(() => new SirrClient({ token: "" })).not.toThrow();
+    expect(() => new SirrClient({})).not.toThrow();
   });
 
   it("uses default server when not provided", () => {
@@ -103,6 +104,14 @@ describe("authorization header", () => {
     await sirr.list();
     const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect((opts.headers as Record<string, string>).Authorization).toBe("Bearer test");
+  });
+
+  it("omits auth header when token is empty", async () => {
+    const anon = new SirrClient({ server: "http://localhost:39999" });
+    mockFetch.mockResolvedValueOnce(ok({ id: "abc" }));
+    await anon.push("secret");
+    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect((opts.headers as Record<string, string>).Authorization).toBeUndefined();
   });
 
   it("does NOT send auth header on health()", async () => {
