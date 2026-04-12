@@ -11,20 +11,26 @@
 
 Zero dependencies. Uses native `fetch`. Works in Node 18+, Deno, Bun, and edge runtimes.
 
-## Install
+## Quick Start
+
+Install the server:
+
+```bash
+curl -fsSL https://get.sirr.dev | sh
+```
+
+Install the SDK:
 
 ```bash
 npm install @sirrlock/node
 ```
-
-## Quick Start
 
 ```typescript
 import { SirrClient } from '@sirrlock/node'
 
 const sirr = new SirrClient({
   server: 'http://localhost:7843',
-  key: process.env.SIRR_KEY,  // optional — omit for anonymous push
+  token: process.env.SIRR_TOKEN,  // optional — omit for anonymous push
 })
 
 // Push a secret — returns { hash, url, expires_at, reads_remaining, owned }
@@ -37,13 +43,13 @@ const value = await sirr.get(hash)  // → 'postgres://...' or null if gone
 const status = await sirr.inspect(hash)
 // → { created, ttlExpires, readsRemaining, owned }
 
-// Update value (owner key required)
+// Update value (owner token required)
 await sirr.patch(hash, { value: 'new-value', reads: 5 })
 
 // Burn immediately
 await sirr.burn(hash)
 
-// Audit trail (owner key required)
+// Audit trail (owner token required)
 const { events } = await sirr.audit(hash)
 
 // List your secrets (authenticated)
@@ -62,16 +68,16 @@ sirr get <hash>
 # Inspect (HEAD — no read consumed)
 sirr inspect <hash>
 
-# Patch (requires SIRR_KEY)
+# Patch (requires SIRR_TOKEN)
 sirr patch <hash> "new-value" --reads 5
 
 # Burn
 sirr burn <hash>
 
-# Audit (requires SIRR_KEY)
+# Audit (requires SIRR_TOKEN)
 sirr audit <hash>
 
-# List own secrets (requires SIRR_KEY)
+# List own secrets (requires SIRR_TOKEN)
 sirr list
 
 # Server info
@@ -81,8 +87,8 @@ sirr version
 
 Config via env vars:
 ```bash
-export SIRR_SERVER=http://localhost:7843   # default: https://sirrlock.com
-export SIRR_KEY=your-api-key               # for authenticated operations
+export SIRR_SERVER=http://localhost:7843   # default: https://sirr.sirrlock.com
+export SIRR_TOKEN=your-api-token           # for authenticated operations
 ```
 
 ## API Reference
@@ -91,8 +97,8 @@ export SIRR_KEY=your-api-key               # for authenticated operations
 
 ```typescript
 new SirrClient(opts?: {
-  server?: string   // default: 'https://sirrlock.com'
-  key?: string      // Bearer API key. Omit for anonymous operations.
+  server?: string   // default: 'https://sirr.sirrlock.com'
+  token?: string    // Bearer API token. Omit for anonymous operations.
 })
 ```
 
@@ -125,7 +131,7 @@ try {
 } catch (e) {
   if (e instanceof SirrError) {
     console.error(`API error ${e.status}: ${e.message}`)
-    // e.status: 401 (no auth), 404 (not found/wrong key), 410 (gone), 405 (anon patch)
+    // e.status: 401 (no auth), 404 (not found/wrong token), 410 (gone), 405 (anon patch)
   }
 }
 ```

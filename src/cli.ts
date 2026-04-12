@@ -2,13 +2,13 @@
 /**
  * Sirr CLI — thin Node.js wrapper for use via `npx @sirrlock/node` or `npm i -g @sirrlock/node`.
  *
- * Reads SIRR_SERVER (default: https://sirrlock.com) and SIRR_KEY.
+ * Reads SIRR_SERVER (default: https://sirr.sirrlock.com) and SIRR_TOKEN.
  */
 
 import { SirrClient, SirrError } from "./index";
 
-const server = process.env.SIRR_SERVER ?? "https://sirrlock.com";
-const key = process.env.SIRR_KEY ?? "";
+const server = process.env.SIRR_SERVER ?? "https://sirr.sirrlock.com";
+const token = process.env.SIRR_TOKEN ?? "";
 
 function usage(): never {
   console.error(`
@@ -26,8 +26,8 @@ Commands:
   version
 
 Environment:
-  SIRR_SERVER   Server URL (default: https://sirrlock.com)
-  SIRR_KEY      Bearer API key
+  SIRR_SERVER   Server URL (default: https://sirr.sirrlock.com)
+  SIRR_TOKEN    Bearer API token
 `);
   process.exit(1);
 }
@@ -60,7 +60,7 @@ async function main() {
   if (!subcmd) usage();
 
   const args = parseArgs(rest);
-  const client = new SirrClient({ server, key });
+  const client = new SirrClient({ server, token });
 
   try {
     switch (subcmd) {

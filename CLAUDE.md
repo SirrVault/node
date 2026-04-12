@@ -16,15 +16,15 @@ Published to npm as `@sirrlock/node`. Zero production dependencies — uses nati
 
 ```typescript
 class SirrClient {
-  constructor(opts?: { server?: string; key?: string })
+  constructor(opts?: { server?: string; token?: string })
 
   // Secrets
   push(value: string, opts?: { ttl_seconds?: number; reads?: number; prefix?: string }): Promise<SecretResponse>
   get(hash: string): Promise<string | null>        // null on 410 (gone/burned/expired)
   inspect(hash: string): Promise<SecretStatus | null>  // HEAD, does not consume a read
-  patch(hash: string, opts: PatchOptions): Promise<SecretResponse>  // owner key required
+  patch(hash: string, opts: PatchOptions): Promise<SecretResponse>  // owner token required
   burn(hash: string): Promise<void>                // DELETE, 204 on success
-  audit(hash: string): Promise<AuditResponse>      // owner key required
+  audit(hash: string): Promise<AuditResponse>      // owner token required
   list(): Promise<SecretMetadata[]>                // authenticated, own secrets only
 
   // Server info
@@ -53,7 +53,7 @@ class SirrError extends Error {
 - `inspect()` returns `null` on 410 — same rationale
 - All other non-2xx responses throw `SirrError`
 - `get()`, `inspect()`, `patch()`, `burn()`, `audit()` validate that hash is non-empty
-- Constructor allows empty key (anonymous operations are valid)
+- Constructor allows empty token (anonymous operations are valid)
 - `request()` checks `res.ok` before `res.json()` — handles HTML error pages (nginx 502 etc.)
 - `health()` and `version()` throw `SirrError` on non-2xx (do not send auth header)
 - Never log secret values

@@ -8,10 +8,10 @@
 // ── Constructor options ───────────────────────────────────────────────────────
 
 export interface SirrClientOptions {
-  /** Sirr server base URL. Default: https://sirrlock.com */
+  /** Sirr server base URL. Default: https://sirr.sirrlock.com */
   server?: string;
-  /** Bearer API key for authenticated operations. Omit for anonymous push/get. */
-  key?: string;
+  /** Bearer API token for authenticated operations. Omit for anonymous push/get. */
+  token?: string;
 }
 
 // ── Request options ──────────────────────────────────────────────────────────
@@ -94,11 +94,11 @@ export class SirrError extends Error {
 
 export class SirrClient {
   private readonly server: string;
-  private readonly key: string;
+  private readonly token: string;
 
   constructor(opts: SirrClientOptions = {}) {
-    this.server = (opts.server ?? "https://sirrlock.com").replace(/\/$/, "");
-    this.key = opts.key ?? "";
+    this.server = (opts.server ?? "https://sirr.sirrlock.com").replace(/\/$/, "");
+    this.token = opts.token ?? "";
   }
 
   // ── HTTP helpers ──────────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ export class SirrClient {
   private headers(accept?: string): Record<string, string> {
     const h: Record<string, string> = {};
     if (accept) h.Accept = accept;
-    if (this.key) h.Authorization = `Bearer ${this.key}`;
+    if (this.token) h.Authorization = `Bearer ${this.token}`;
     return h;
   }
 
@@ -159,7 +159,14 @@ export class SirrClient {
     return res.json() as Promise<{ status: string }>;
   }
 
-  // ── Secrets ───────────────────────────────────────────────────────────────
+  /** Get server version. Does not require authentication. */
+  async version(): Promise<{ version: string }> {
+    const res = await fetch(`${this.server}/version`);
+    if (!res.ok) throw new SirrError(res.status, "version check failed");
+    return res.json() as Promise<{ version: string }>;
+  }
+
+  // ── Secrets ─────────────────────────────────────────────────────────────
 
   /** Create a secret. Returns metadata including the hash. */
   async push(value: string, opts: PushOptions = {}): Promise<SecretResponse> {
@@ -208,7 +215,7 @@ export class SirrClient {
     };
   }
 
-  /** Update an existing secret (owner key required). */
+  /** Update an existing secret (owner token required). */
   async patch(hash: string, opts: PatchOptions): Promise<SecretResponse> {
     if (!hash) throw new Error("hash must not be empty");
     const { data } = await this.request<SecretResponse>(
@@ -225,7 +232,7 @@ export class SirrClient {
     await this.request("DELETE", `/secret/${encodeURIComponent(hash)}`);
   }
 
-  /** Get the audit trail for a secret (owner key required). */
+  /** Get the audit trail for a secret (owner token required). */
   async audit(hash: string): Promise<AuditResponse> {
     if (!hash) throw new Error("hash must not be empty");
     const { data } = await this.request<AuditResponse>(
@@ -235,22 +242,9 @@ export class SirrClient {
     return data;
   }
 
-  /** List all secrets owned by the calling key. */
+  /** List all secrets owned by the calling token. */
   async list(): Promise<SecretMetadata[]> {
     const { data } = await this.request<SecretMetadata[]>("GET", "/secrets");
     return data;
-  }
-
-  /** Helper: list all owned secrets and fetch their values. Note: consumes a read for each. */
-  async pullAll(): Promise<Record<string, string>> {
-    const metas = await this.list();
-    const result: Record<string, string> = {};
-    for (const meta of metas) {
-      if (!meta.burned) {
-        const val = await this.get(meta.hash);
-        if (val !== null) result[meta.hash] = val;
-      }
-    }
-    return result;
   }
 }

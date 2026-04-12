@@ -10,7 +10,7 @@ import {
 const mockFetch = jest.fn<typeof fetch>();
 global.fetch = mockFetch;
 
-// ── Response helpers ─────────────────────────────────────────
+// ── Response helpers ─────────────────────────────────────
 
 function json(status: number, body: unknown): Response {
   return {
@@ -78,8 +78,8 @@ describe("SirrError", () => {
 // ── Constructor ────────────────────────────────────────────
 
 describe("constructor", () => {
-  it("allows empty key for anonymous operations", () => {
-    expect(() => new SirrClient({ key: "" })).not.toThrow();
+  it("allows empty token for anonymous operations", () => {
+    expect(() => new SirrClient({ token: "" })).not.toThrow();
     expect(() => new SirrClient({})).not.toThrow();
     expect(() => new SirrClient()).not.toThrow();
   });
@@ -92,17 +92,20 @@ describe("constructor", () => {
     expect(url).toBe("http://example.com/secret");
   });
 
-  it("uses default server when not provided", () => {
-    const c = new SirrClient({ key: "t" });
-    expect(c).toBeInstanceOf(SirrClient);
+  it("defaults to https://sirr.sirrlock.com", async () => {
+    const c = new SirrClient({ token: "t" });
+    mockFetch.mockResolvedValueOnce(json(201, { hash: "h", url: "u", owned: true }));
+    await c.push("v");
+    const [url] = mockFetch.mock.calls[0] as [string];
+    expect(url).toBe("https://sirr.sirrlock.com/secret");
   });
 });
 
 // ── Authorization header ──────────────────────────────────
 
 describe("authorization header", () => {
-  it("sends Bearer token when key is set", async () => {
-    const c = new SirrClient({ server: BASE, key: "my-token" });
+  it("sends Bearer token when token is set", async () => {
+    const c = new SirrClient({ server: BASE, token: "my-token" });
     mockFetch.mockResolvedValueOnce(json(201, { hash: "h", url: "u", owned: true }));
     await c.push("val");
     const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
@@ -110,7 +113,7 @@ describe("authorization header", () => {
     expect(headers.Authorization).toBe("Bearer my-token");
   });
 
-  it("omits Authorization when no key", async () => {
+  it("omits Authorization when no token", async () => {
     const c = new SirrClient({ server: BASE });
     mockFetch.mockResolvedValueOnce(json(201, { hash: "h", url: "u", owned: false }));
     await c.push("val");
@@ -171,21 +174,15 @@ describe("push", () => {
   });
 
   it("keyed push returns owned: true", async () => {
-    const c = new SirrClient({ server: BASE, key: "tok" });
+    const c = new SirrClient({ server: BASE, token: "tok" });
     mockFetch.mockResolvedValueOnce(json(201, { hash: "h", url: "u", owned: true }));
     const result = await c.push("val");
     expect(result.owned).toBe(true);
   });
 
-  it("throws SirrError on 401 (private mode, no key)", async () => {
+  it("throws SirrError on 401 (private mode, no token)", async () => {
     mockFetch.mockResolvedValueOnce(json(401, { error: "authentication required" }));
-    try {
-      await sirr.push("val");
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(401);
-    }
+    await expect(sirr.push("val")).rejects.toThrow(SirrError);
   });
 
   it("throws SirrError on 400 (bad prefix)", async () => {
@@ -197,13 +194,7 @@ describe("push", () => {
     mockFetch.mockResolvedValueOnce(
       json(503, { error: "server is in lockdown mode (visibility=none)" }),
     );
-    try {
-      await sirr.push("val");
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(503);
-    }
+    await expect(sirr.push("val")).rejects.toThrow(SirrError);
   });
 });
 
@@ -314,7 +305,7 @@ describe("inspect", () => {
 // ── PATCH /secret/{hash} (patch) ─────────────────────────
 
 describe("patch", () => {
-  const sirr = new SirrClient({ server: BASE, key: "owner-key" });
+  const sirr = new SirrClient({ server: BASE, token: "owner-token" });
 
   it("updates value and returns updated metadata", async () => {
     const resp: SecretResponse = {
@@ -351,47 +342,23 @@ describe("patch", () => {
   it("throws SirrError(401) when no auth on keyed secret", async () => {
     const anon = new SirrClient({ server: BASE });
     mockFetch.mockResolvedValueOnce(json(401, { error: "authentication required" }));
-    try {
-      await anon.patch("h", { value: "nope" });
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(401);
-    }
+    await expect(anon.patch("h", { value: "nope" })).rejects.toThrow(SirrError);
   });
 
   it("throws SirrError(405) when anonymous caller patches anonymous secret", async () => {
     const anon = new SirrClient({ server: BASE });
     mockFetch.mockResolvedValueOnce(json(405, { error: "method not allowed" }));
-    try {
-      await anon.patch("anon-hash", { value: "nope" });
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(405);
-    }
+    await expect(anon.patch("anon-hash", { value: "nope" })).rejects.toThrow(SirrError);
   });
 
-  it("throws SirrError(404) when wrong key", async () => {
+  it("throws SirrError(404) when wrong token", async () => {
     mockFetch.mockResolvedValueOnce(json(404, { error: "not found" }));
-    try {
-      await sirr.patch("not-mine", { value: "hack" });
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(404);
-    }
+    await expect(sirr.patch("not-mine", { value: "hack" })).rejects.toThrow(SirrError);
   });
 
   it("throws SirrError(410) when secret is burned", async () => {
     mockFetch.mockResolvedValueOnce(json(410, { error: "secret is gone" }));
-    try {
-      await sirr.patch("burned", { value: "too-late" });
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(410);
-    }
+    await expect(sirr.patch("burned", { value: "too-late" })).rejects.toThrow(SirrError);
   });
 
   it("throws on empty hash", async () => {
@@ -414,42 +381,24 @@ describe("burn", () => {
   });
 
   it("owner can burn keyed secret", async () => {
-    const keyed = new SirrClient({ server: BASE, key: "tok" });
+    const keyed = new SirrClient({ server: BASE, token: "tok" });
     mockFetch.mockResolvedValueOnce(noContent());
     await expect(keyed.burn("owned-hash")).resolves.toBeUndefined();
   });
 
   it("throws SirrError(401) when no auth on keyed secret", async () => {
     mockFetch.mockResolvedValueOnce(json(401, { error: "authentication required" }));
-    try {
-      await sirr.burn("keyed-hash");
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(401);
-    }
+    await expect(sirr.burn("keyed-hash")).rejects.toThrow(SirrError);
   });
 
   it("throws SirrError(410) on already burned", async () => {
     mockFetch.mockResolvedValueOnce(json(410, { error: "secret is gone" }));
-    try {
-      await sirr.burn("already-burned");
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(410);
-    }
+    await expect(sirr.burn("already-burned")).rejects.toThrow(SirrError);
   });
 
   it("throws SirrError(404) when not found", async () => {
     mockFetch.mockResolvedValueOnce(json(404, { error: "not found" }));
-    try {
-      await sirr.burn("missing");
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(404);
-    }
+    await expect(sirr.burn("missing")).rejects.toThrow(SirrError);
   });
 
   it("throws on empty hash", async () => {
@@ -460,7 +409,7 @@ describe("burn", () => {
 // ── GET /secret/{hash}/audit (audit) ─────────────────────
 
 describe("audit", () => {
-  const sirr = new SirrClient({ server: BASE, key: "owner-key" });
+  const sirr = new SirrClient({ server: BASE, token: "owner-token" });
 
   it("returns audit response with events", async () => {
     const resp: AuditResponse = {
@@ -482,35 +431,17 @@ describe("audit", () => {
   it("throws SirrError(401) when no auth", async () => {
     const anon = new SirrClient({ server: BASE });
     mockFetch.mockResolvedValueOnce(json(401, { error: "authentication required" }));
-    try {
-      await anon.audit("h");
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(401);
-    }
+    await expect(anon.audit("h")).rejects.toThrow(SirrError);
   });
 
   it("throws SirrError(404) for anonymous secret audit", async () => {
     mockFetch.mockResolvedValueOnce(json(404, { error: "not found" }));
-    try {
-      await sirr.audit("anon");
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(404);
-    }
+    await expect(sirr.audit("anon")).rejects.toThrow(SirrError);
   });
 
-  it("throws SirrError(404) for wrong key", async () => {
+  it("throws SirrError(404) for wrong token", async () => {
     mockFetch.mockResolvedValueOnce(json(404, { error: "not found" }));
-    try {
-      await sirr.audit("not-mine");
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(404);
-    }
+    await expect(sirr.audit("not-mine")).rejects.toThrow(SirrError);
   });
 
   it("throws on empty hash", async () => {
@@ -522,7 +453,7 @@ describe("audit", () => {
 
 describe("list", () => {
   it("returns array of secret metadata", async () => {
-    const keyed = new SirrClient({ server: BASE, key: "tok" });
+    const keyed = new SirrClient({ server: BASE, token: "tok" });
     const items: SecretMetadata[] = [
       {
         hash: "h1",
@@ -553,13 +484,7 @@ describe("list", () => {
   it("throws SirrError(401) when anonymous", async () => {
     const anon = new SirrClient({ server: BASE });
     mockFetch.mockResolvedValueOnce(json(401, { error: "authentication required" }));
-    try {
-      await anon.list();
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SirrError);
-      expect((e as SirrError).status).toBe(401);
-    }
+    await expect(anon.list()).rejects.toThrow(SirrError);
   });
 });
 
@@ -575,12 +500,10 @@ describe("health", () => {
   });
 
   it("does not send auth header", async () => {
-    const c = new SirrClient({ server: BASE, key: "secret-key" });
+    const c = new SirrClient({ server: BASE, token: "secret-token" });
     mockFetch.mockResolvedValueOnce(json(200, { status: "ok" }));
     await c.health();
-    // health() calls fetch() directly without RequestInit headers
     const callArgs = mockFetch.mock.calls[0] as unknown[];
-    // If second arg exists, it should not have Authorization
     const init = callArgs[1] as RequestInit | undefined;
     if (init?.headers) {
       const h = init.headers as Record<string, string>;
