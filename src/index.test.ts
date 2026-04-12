@@ -1,22 +1,44 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { SecretExistsError, SirrClient, SirrError } from "./index";
+import {
+  type AuditResponse,
+  type SecretMetadata,
+  type SecretResponse,
+  SirrClient,
+  SirrError,
+} from "./index";
 
 const mockFetch = jest.fn<typeof fetch>();
 global.fetch = mockFetch;
 
-function ok(body: unknown): Response {
+// ── Response helpers ─────────────────────────────────────────
+
+function json(status: number, body: unknown): Response {
   return {
-    ok: true,
-    status: 200,
+    ok: status >= 200 && status < 300,
+    status,
+    headers: new Headers(),
     json: () => Promise.resolve(body),
+    text: () => Promise.resolve(JSON.stringify(body)),
   } as unknown as Response;
 }
 
-function err(status: number, body: unknown): Response {
+function noContent(): Response {
   return {
-    ok: false,
+    ok: true,
+    status: 204,
+    headers: new Headers(),
+    json: () => Promise.reject(new Error("no body")),
+    text: () => Promise.resolve(""),
+  } as unknown as Response;
+}
+
+function headResponse(status: number, headers: Record<string, string>): Response {
+  return {
+    ok: status >= 200 && status < 300,
     status,
-    json: () => Promise.resolve(body),
+    headers: new Headers(headers),
+    json: () => Promise.reject(new Error("HEAD has no body")),
+    text: () => Promise.resolve(""),
   } as unknown as Response;
 }
 
@@ -24,12 +46,13 @@ function errHtml(status: number, html: string): Response {
   return {
     ok: false,
     status,
+    headers: new Headers(),
     json: () => Promise.reject(new SyntaxError("Unexpected token <")),
     text: () => Promise.resolve(html),
   } as unknown as Response;
 }
 
-const sirr = new SirrClient({ server: "http://localhost:39999", token: "test" });
+const BASE = "http://localhost:7843";
 
 beforeEach(() => {
   mockFetch.mockReset();
@@ -52,936 +75,571 @@ describe("SirrError", () => {
   });
 });
 
-// ── Constructor validation ─────────────────────────────────
+// ── Constructor ────────────────────────────────────────────
 
 describe("constructor", () => {
-  it("allows empty token for anonymous push", () => {
-    expect(() => new SirrClient({ token: "" })).not.toThrow();
+  it("allows empty key for anonymous operations", () => {
+    expect(() => new SirrClient({ key: "" })).not.toThrow();
     expect(() => new SirrClient({})).not.toThrow();
-  });
-
-  it("uses default server when not provided", () => {
-    const c = new SirrClient({ token: "t" });
-    // We can't inspect private fields, but pushing should use the default
-    expect(c).toBeInstanceOf(SirrClient);
+    expect(() => new SirrClient()).not.toThrow();
   });
 
   it("strips trailing slash from server", async () => {
-    const c = new SirrClient({ server: "http://example.com/", token: "t" });
-    mockFetch.mockResolvedValueOnce(ok({ id: "abc123" }));
+    const c = new SirrClient({ server: "http://example.com/" });
+    mockFetch.mockResolvedValueOnce(json(201, { hash: "abc", url: "u", owned: false }));
     await c.push("v");
     const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://example.com/secrets");
+    expect(url).toBe("http://example.com/secret");
+  });
+
+  it("uses default server when not provided", () => {
+    const c = new SirrClient({ key: "t" });
+    expect(c).toBeInstanceOf(SirrClient);
   });
 });
 
-// ── Key validation ─────────────────────────────────────────
-
-describe("key validation", () => {
-  it("set throws on empty key", async () => {
-    const orgSirr = new SirrClient({
-      server: "http://localhost:39999",
-      token: "test",
-      org: "acme",
-    });
-    await expect(orgSirr.set("", "val")).rejects.toThrow("key must not be empty");
-  });
-
-  it("get throws on empty id/key", async () => {
-    await expect(sirr.get("")).rejects.toThrow("must not be empty");
-  });
-
-  it("delete throws on empty key", async () => {
-    await expect(sirr.delete("")).rejects.toThrow("key must not be empty");
-  });
-});
-
-// ── Authorization header ───────────────────────────────────
+// ── Authorization header ──────────────────────────────────
 
 describe("authorization header", () => {
-  it("sends Bearer token on authenticated requests", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ secrets: [] }));
-    await sirr.list();
-    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect((opts.headers as Record<string, string>).Authorization).toBe("Bearer test");
+  it("sends Bearer token when key is set", async () => {
+    const c = new SirrClient({ server: BASE, key: "my-token" });
+    mockFetch.mockResolvedValueOnce(json(201, { hash: "h", url: "u", owned: true }));
+    await c.push("val");
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe("Bearer my-token");
   });
 
-  it("omits auth header when token is empty", async () => {
-    const anon = new SirrClient({ server: "http://localhost:39999" });
-    mockFetch.mockResolvedValueOnce(ok({ id: "abc" }));
-    await anon.push("secret");
-    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect((opts.headers as Record<string, string>).Authorization).toBeUndefined();
-  });
-
-  it("does NOT send auth header on health()", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ status: "ok" }));
-    await sirr.health();
-    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit | undefined];
-    expect(opts?.headers).toBeUndefined();
+  it("omits Authorization when no key", async () => {
+    const c = new SirrClient({ server: BASE });
+    mockFetch.mockResolvedValueOnce(json(201, { hash: "h", url: "u", owned: false }));
+    await c.push("val");
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
   });
 });
 
-// ── health ─────────────────────────────────────────────────
+// ── POST /secret (push) ──────────────────────────────────
 
-describe("health", () => {
-  it("returns status", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ status: "ok" }));
-    expect(await sirr.health()).toEqual({ status: "ok" });
+describe("push", () => {
+  const sirr = new SirrClient({ server: BASE });
+
+  it("creates anonymous secret", async () => {
+    const resp: SecretResponse = {
+      hash: "abc123",
+      url: `${BASE}/secret/abc123`,
+      expires_at: null,
+      reads_remaining: null,
+      owned: false,
+    };
+    mockFetch.mockResolvedValueOnce(json(201, resp));
+
+    const result = await sirr.push("hello");
+    expect(result.hash).toBe("abc123");
+    expect(result.owned).toBe(false);
+
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE}/secret`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ value: "hello" });
   });
 
-  it("throws SirrError on non-2xx", async () => {
-    mockFetch.mockResolvedValueOnce({ ok: false, status: 503 } as Response);
+  it("sends ttl_seconds and reads when provided", async () => {
+    mockFetch.mockResolvedValueOnce(
+      json(201, {
+        hash: "h",
+        url: "u",
+        expires_at: 1700003600,
+        reads_remaining: 3,
+        owned: false,
+      }),
+    );
+    const result = await sirr.push("val", { ttl_seconds: 3600, reads: 3 });
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(body.ttl_seconds).toBe(3600);
+    expect(body.reads).toBe(3);
+    expect(result.expires_at).toBe(1700003600);
+    expect(result.reads_remaining).toBe(3);
+  });
+
+  it("sends prefix when provided", async () => {
+    mockFetch.mockResolvedValueOnce(json(201, { hash: "db-abc", url: "u", owned: false }));
+    await sirr.push("val", { prefix: "db-" });
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(body.prefix).toBe("db-");
+  });
+
+  it("keyed push returns owned: true", async () => {
+    const c = new SirrClient({ server: BASE, key: "tok" });
+    mockFetch.mockResolvedValueOnce(json(201, { hash: "h", url: "u", owned: true }));
+    const result = await c.push("val");
+    expect(result.owned).toBe(true);
+  });
+
+  it("throws SirrError on 401 (private mode, no key)", async () => {
+    mockFetch.mockResolvedValueOnce(json(401, { error: "authentication required" }));
+    try {
+      await sirr.push("val");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(401);
+    }
+  });
+
+  it("throws SirrError on 400 (bad prefix)", async () => {
+    mockFetch.mockResolvedValueOnce(json(400, { error: "prefix must match [a-z0-9_-]{1,16}" }));
+    await expect(sirr.push("val", { prefix: "BAD!" })).rejects.toThrow(SirrError);
+  });
+
+  it("throws SirrError on 503 (visibility=none)", async () => {
+    mockFetch.mockResolvedValueOnce(
+      json(503, { error: "server is in lockdown mode (visibility=none)" }),
+    );
+    try {
+      await sirr.push("val");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(503);
+    }
+  });
+});
+
+// ── GET /secret/{hash} (get) ─────────────────────────────
+
+describe("get", () => {
+  const sirr = new SirrClient({ server: BASE });
+
+  it("returns the secret value", async () => {
+    mockFetch.mockResolvedValueOnce(json(200, { value: "my-secret" }));
+    const val = await sirr.get("abc123");
+    expect(val).toBe("my-secret");
+
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE}/secret/abc123`);
+    expect(init.method).toBe("GET");
+  });
+
+  it("sends Accept: application/json", async () => {
+    mockFetch.mockResolvedValueOnce(json(200, { value: "v" }));
+    await sirr.get("h");
+    const headers = (mockFetch.mock.calls[0] as [string, RequestInit])[1].headers as Record<
+      string,
+      string
+    >;
+    expect(headers.Accept).toBe("application/json");
+  });
+
+  it("returns null on 410 (burned/expired/missing)", async () => {
+    mockFetch.mockResolvedValueOnce(json(410, { error: "secret is gone" }));
+    const val = await sirr.get("gone-hash");
+    expect(val).toBeNull();
+  });
+
+  it("throws on empty hash", async () => {
+    await expect(sirr.get("")).rejects.toThrow("hash must not be empty");
+  });
+
+  it("throws SirrError on other errors", async () => {
+    mockFetch.mockResolvedValueOnce(json(500, { error: "internal" }));
+    await expect(sirr.get("h")).rejects.toThrow(SirrError);
+  });
+});
+
+// ── HEAD /secret/{hash} (inspect) ────────────────────────
+
+describe("inspect", () => {
+  const sirr = new SirrClient({ server: BASE });
+
+  it("returns metadata from headers", async () => {
+    mockFetch.mockResolvedValueOnce(
+      headResponse(200, {
+        "x-sirr-created": "2024-01-15T10:00:00Z",
+        "x-sirr-ttl-expires": "2024-01-15T11:00:00Z",
+        "x-sirr-reads-remaining": "5",
+        "x-sirr-owned": "false",
+      }),
+    );
+    const status = await sirr.inspect("abc");
+    expect(status).toEqual({
+      created: "2024-01-15T10:00:00Z",
+      ttlExpires: "2024-01-15T11:00:00Z",
+      readsRemaining: 5,
+      owned: false,
+    });
+
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE}/secret/abc`);
+    expect(init.method).toBe("HEAD");
+  });
+
+  it("returns null for reads_remaining when header absent", async () => {
+    mockFetch.mockResolvedValueOnce(
+      headResponse(200, {
+        "x-sirr-created": "2024-01-15T10:00:00Z",
+        "x-sirr-owned": "true",
+      }),
+    );
+    const status = await sirr.inspect("h");
+    expect(status?.readsRemaining).toBeNull();
+    expect(status?.ttlExpires).toBeNull();
+    expect(status?.owned).toBe(true);
+  });
+
+  it("returns null on 410", async () => {
+    mockFetch.mockResolvedValueOnce(headResponse(410, {}));
+    const status = await sirr.inspect("gone");
+    expect(status).toBeNull();
+  });
+
+  it("does not consume a read (method is HEAD)", async () => {
+    mockFetch.mockResolvedValueOnce(
+      headResponse(200, {
+        "x-sirr-created": "t",
+        "x-sirr-owned": "false",
+      }),
+    );
+    await sirr.inspect("h");
+    const init = (mockFetch.mock.calls[0] as [string, RequestInit])[1];
+    expect(init.method).toBe("HEAD");
+  });
+
+  it("throws on empty hash", async () => {
+    await expect(sirr.inspect("")).rejects.toThrow("hash must not be empty");
+  });
+});
+
+// ── PATCH /secret/{hash} (patch) ─────────────────────────
+
+describe("patch", () => {
+  const sirr = new SirrClient({ server: BASE, key: "owner-key" });
+
+  it("updates value and returns updated metadata", async () => {
+    const resp: SecretResponse = {
+      hash: "abc",
+      url: `${BASE}/secret/abc`,
+      expires_at: null,
+      reads_remaining: null,
+      owned: true,
+    };
+    mockFetch.mockResolvedValueOnce(json(200, resp));
+    const result = await sirr.patch("abc", { value: "updated" });
+    expect(result.hash).toBe("abc");
+
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(body.value).toBe("updated");
+  });
+
+  it("sends ttl_seconds and reads when provided", async () => {
+    mockFetch.mockResolvedValueOnce(
+      json(200, {
+        hash: "h",
+        url: "u",
+        expires_at: 99,
+        reads_remaining: 2,
+        owned: true,
+      }),
+    );
+    await sirr.patch("h", { value: "v", ttl_seconds: 9999, reads: 2 });
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(body.ttl_seconds).toBe(9999);
+    expect(body.reads).toBe(2);
+  });
+
+  it("throws SirrError(401) when no auth on keyed secret", async () => {
+    const anon = new SirrClient({ server: BASE });
+    mockFetch.mockResolvedValueOnce(json(401, { error: "authentication required" }));
+    try {
+      await anon.patch("h", { value: "nope" });
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(401);
+    }
+  });
+
+  it("throws SirrError(405) when anonymous caller patches anonymous secret", async () => {
+    const anon = new SirrClient({ server: BASE });
+    mockFetch.mockResolvedValueOnce(json(405, { error: "method not allowed" }));
+    try {
+      await anon.patch("anon-hash", { value: "nope" });
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(405);
+    }
+  });
+
+  it("throws SirrError(404) when wrong key", async () => {
+    mockFetch.mockResolvedValueOnce(json(404, { error: "not found" }));
+    try {
+      await sirr.patch("not-mine", { value: "hack" });
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(404);
+    }
+  });
+
+  it("throws SirrError(410) when secret is burned", async () => {
+    mockFetch.mockResolvedValueOnce(json(410, { error: "secret is gone" }));
+    try {
+      await sirr.patch("burned", { value: "too-late" });
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(410);
+    }
+  });
+
+  it("throws on empty hash", async () => {
+    await expect(sirr.patch("", { value: "v" })).rejects.toThrow("hash must not be empty");
+  });
+});
+
+// ── DELETE /secret/{hash} (burn) ─────────────────────────
+
+describe("burn", () => {
+  const sirr = new SirrClient({ server: BASE });
+
+  it("burns anonymous secret (204)", async () => {
+    mockFetch.mockResolvedValueOnce(noContent());
+    await expect(sirr.burn("anon-hash")).resolves.toBeUndefined();
+
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE}/secret/anon-hash`);
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("owner can burn keyed secret", async () => {
+    const keyed = new SirrClient({ server: BASE, key: "tok" });
+    mockFetch.mockResolvedValueOnce(noContent());
+    await expect(keyed.burn("owned-hash")).resolves.toBeUndefined();
+  });
+
+  it("throws SirrError(401) when no auth on keyed secret", async () => {
+    mockFetch.mockResolvedValueOnce(json(401, { error: "authentication required" }));
+    try {
+      await sirr.burn("keyed-hash");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(401);
+    }
+  });
+
+  it("throws SirrError(410) on already burned", async () => {
+    mockFetch.mockResolvedValueOnce(json(410, { error: "secret is gone" }));
+    try {
+      await sirr.burn("already-burned");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(410);
+    }
+  });
+
+  it("throws SirrError(404) when not found", async () => {
+    mockFetch.mockResolvedValueOnce(json(404, { error: "not found" }));
+    try {
+      await sirr.burn("missing");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(404);
+    }
+  });
+
+  it("throws on empty hash", async () => {
+    await expect(sirr.burn("")).rejects.toThrow("hash must not be empty");
+  });
+});
+
+// ── GET /secret/{hash}/audit (audit) ─────────────────────
+
+describe("audit", () => {
+  const sirr = new SirrClient({ server: BASE, key: "owner-key" });
+
+  it("returns audit response with events", async () => {
+    const resp: AuditResponse = {
+      hash: "abc",
+      created_at: 1700000000,
+      events: [
+        { type: "secret.create", at: 1700000000, ip: "" },
+        { type: "secret.read", at: 1700001234, ip: "" },
+      ],
+    };
+    mockFetch.mockResolvedValueOnce(json(200, resp));
+    const result = await sirr.audit("abc");
+    expect(result.hash).toBe("abc");
+    expect(result.events).toHaveLength(2);
+    expect(result.events[0].type).toBe("secret.create");
+    expect(result.events[1].type).toBe("secret.read");
+  });
+
+  it("throws SirrError(401) when no auth", async () => {
+    const anon = new SirrClient({ server: BASE });
+    mockFetch.mockResolvedValueOnce(json(401, { error: "authentication required" }));
+    try {
+      await anon.audit("h");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(401);
+    }
+  });
+
+  it("throws SirrError(404) for anonymous secret audit", async () => {
+    mockFetch.mockResolvedValueOnce(json(404, { error: "not found" }));
+    try {
+      await sirr.audit("anon");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(404);
+    }
+  });
+
+  it("throws SirrError(404) for wrong key", async () => {
+    mockFetch.mockResolvedValueOnce(json(404, { error: "not found" }));
+    try {
+      await sirr.audit("not-mine");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(404);
+    }
+  });
+
+  it("throws on empty hash", async () => {
+    await expect(sirr.audit("")).rejects.toThrow("hash must not be empty");
+  });
+});
+
+// ── GET /secrets (list) ──────────────────────────────────
+
+describe("list", () => {
+  it("returns array of secret metadata", async () => {
+    const keyed = new SirrClient({ server: BASE, key: "tok" });
+    const items: SecretMetadata[] = [
+      {
+        hash: "h1",
+        created_at: 1700000000,
+        ttl_expires_at: null,
+        reads_remaining: null,
+        burned: false,
+        burned_at: null,
+        owned: true,
+      },
+      {
+        hash: "h2",
+        created_at: 1700000001,
+        ttl_expires_at: 1700009999,
+        reads_remaining: 3,
+        burned: false,
+        burned_at: null,
+        owned: true,
+      },
+    ];
+    mockFetch.mockResolvedValueOnce(json(200, items));
+    const result = await keyed.list();
+    expect(result).toHaveLength(2);
+    expect(result[0].hash).toBe("h1");
+    expect(result[1].reads_remaining).toBe(3);
+  });
+
+  it("throws SirrError(401) when anonymous", async () => {
+    const anon = new SirrClient({ server: BASE });
+    mockFetch.mockResolvedValueOnce(json(401, { error: "authentication required" }));
+    try {
+      await anon.list();
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(401);
+    }
+  });
+});
+
+// ── Health & Version ─────────────────────────────────────
+
+describe("health", () => {
+  const sirr = new SirrClient({ server: BASE });
+
+  it("returns status on success", async () => {
+    mockFetch.mockResolvedValueOnce(json(200, { status: "ok" }));
+    const result = await sirr.health();
+    expect(result.status).toBe("ok");
+  });
+
+  it("does not send auth header", async () => {
+    const c = new SirrClient({ server: BASE, key: "secret-key" });
+    mockFetch.mockResolvedValueOnce(json(200, { status: "ok" }));
+    await c.health();
+    // health() calls fetch() directly without RequestInit headers
+    const callArgs = mockFetch.mock.calls[0] as unknown[];
+    // If second arg exists, it should not have Authorization
+    const init = callArgs[1] as RequestInit | undefined;
+    if (init?.headers) {
+      const h = init.headers as Record<string, string>;
+      expect(h.Authorization).toBeUndefined();
+    }
+  });
+
+  it("throws SirrError on failure", async () => {
+    mockFetch.mockResolvedValueOnce(json(500, {}));
     await expect(sirr.health()).rejects.toThrow(SirrError);
   });
 });
 
-// ── push (public dead-drop) ────────────────────────────────
+describe("version", () => {
+  const sirr = new SirrClient({ server: BASE });
 
-describe("push", () => {
-  it("sends POST /secrets with value-only body", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "deadbeef".repeat(8) }));
-    const result = await sirr.push("bar", { ttl: 60, reads: 1 });
-
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/secrets");
-    expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body as string)).toEqual({
-      value: "bar",
-      ttl_seconds: 60,
-      max_reads: 1,
-    });
-    expect(result.id).toBe("deadbeef".repeat(8));
+  it("returns version on success", async () => {
+    mockFetch.mockResolvedValueOnce(json(200, { version: "1.0.42" }));
+    const result = await sirr.version();
+    expect(result.version).toBe("1.0.42");
   });
 
-  it("does NOT include key in body", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "abc" }));
-    await sirr.push("secret");
-    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(opts.body as string) as Record<string, unknown>;
-    expect(body).not.toHaveProperty("key");
-  });
-
-  it("sends null for omitted ttl and reads", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "abc" }));
-    await sirr.push("bar");
-    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(opts.body as string)).toMatchObject({
-      ttl_seconds: null,
-      max_reads: null,
-    });
-  });
-
-  it("returns id from response", async () => {
-    const id = "a".repeat(64);
-    mockFetch.mockResolvedValueOnce(ok({ id }));
-    const result = await sirr.push("val");
-    expect(result).toEqual({ id });
+  it("throws SirrError on failure", async () => {
+    mockFetch.mockResolvedValueOnce(json(500, {}));
+    await expect(sirr.version()).rejects.toThrow(SirrError);
   });
 });
 
-// ── set (org-scoped named secret) ─────────────────────────
+// ── Error resilience ──────────────────────────────────────
 
-describe("set", () => {
-  const orgSirr = new SirrClient({
-    server: "http://localhost:39999",
-    token: "test",
-    org: "acme",
-  });
+describe("error resilience", () => {
+  const sirr = new SirrClient({ server: BASE });
 
-  it("sends POST /orgs/{org}/secrets with key+value", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ key: "FOO" }));
-    const result = await orgSirr.set("FOO", "bar", { ttl: 60, reads: 1 });
-
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/orgs/acme/secrets");
-    expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body as string)).toEqual({
-      key: "FOO",
-      value: "bar",
-      ttl_seconds: 60,
-      max_reads: 1,
-    });
-    expect(result).toEqual({ key: "FOO" });
-  });
-
-  it("sends null for omitted ttl and reads", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ key: "FOO" }));
-    await orgSirr.set("FOO", "bar");
-    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(opts.body as string)).toMatchObject({
-      ttl_seconds: null,
-      max_reads: null,
-    });
-  });
-
-  it("throws SecretExistsError on 409 Conflict", async () => {
-    mockFetch.mockResolvedValueOnce(
-      err(409, { error: "secret_exists", message: "Key already exists" }),
-    );
-    const thrown = await orgSirr.set("FOO", "bar").catch((e: unknown) => e);
-    expect(thrown).toBeInstanceOf(SecretExistsError);
-    expect((thrown as SecretExistsError).message).toContain("already exists");
-  });
-
-  it("SecretExistsError includes the key name", async () => {
-    mockFetch.mockResolvedValueOnce(
-      err(409, { error: "secret_exists", message: "Key already exists" }),
-    );
+  it("handles HTML error pages (nginx 502 etc)", async () => {
+    mockFetch.mockResolvedValueOnce(errHtml(502, "<html><body>502 Bad Gateway</body></html>"));
     try {
-      await orgSirr.set("MY_KEY", "v");
+      await sirr.push("val");
       throw new Error("should have thrown");
     } catch (e) {
-      expect(e).toBeInstanceOf(SecretExistsError);
-      expect((e as SecretExistsError).message).toContain("MY_KEY");
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(502);
+      expect((e as SirrError).message).toContain("502 Bad Gateway");
     }
   });
 
-  it("re-throws non-409 errors as SirrError", async () => {
-    mockFetch.mockResolvedValueOnce(err(500, { error: "internal error" }));
-    await expect(orgSirr.set("FOO", "bar")).rejects.toThrow(SirrError);
-  });
-
-  it("throws when no org is configured", async () => {
-    await expect(sirr.set("FOO", "bar")).rejects.toThrow("requires an org");
-  });
-
-  it("accepts org override in opts", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ key: "FOO" }));
-    await sirr.set("FOO", "bar", { org: "override-org" });
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toContain("/orgs/override-org/secrets");
-  });
-});
-
-// ── get ────────────────────────────────────────────────────
-
-describe("get", () => {
-  it("routes to /secrets/{id} without org (public)", async () => {
-    const id = "a".repeat(64);
-    mockFetch.mockResolvedValueOnce(ok({ id, value: "bar" }));
-    const result = await sirr.get(id);
-    expect(result).toBe("bar");
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe(`http://localhost:39999/secrets/${id}`);
-  });
-
-  it("routes to /orgs/{org}/secrets/{key} with org (named)", async () => {
-    const orgSirr = new SirrClient({
-      server: "http://localhost:39999",
-      token: "test",
-      org: "acme",
-    });
-    mockFetch.mockResolvedValueOnce(ok({ value: "secret-val" }));
-    const result = await orgSirr.get("MY_KEY");
-    expect(result).toBe("secret-val");
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/secrets/MY_KEY");
-  });
-
-  it("accepts org override in opts", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ value: "v" }));
-    await sirr.get("MY_KEY", { org: "other-org" });
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toContain("/orgs/other-org/secrets/MY_KEY");
-  });
-
-  it("returns value on 200", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ value: "bar" }));
-    expect(await sirr.get("FOO")).toBe("bar");
-  });
-
-  it("returns null on 404", async () => {
-    mockFetch.mockResolvedValueOnce(err(404, { error: "not found" }));
-    expect(await sirr.get("FOO")).toBeNull();
-  });
-
-  it("returns null on 410 Gone (sealed secret)", async () => {
-    mockFetch.mockResolvedValueOnce(err(410, { error: "gone" }));
-    expect(await sirr.get("FOO")).toBeNull();
-  });
-
-  it("throws on non-404 errors", async () => {
-    mockFetch.mockResolvedValueOnce(err(500, { error: "server error" }));
-    await expect(sirr.get("FOO")).rejects.toThrow("500");
-  });
-
-  it("URL-encodes the id/key", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ value: "v" }));
-    await sirr.get("A B");
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toContain("A%20B");
-  });
-});
-
-// ── list ───────────────────────────────────────────────────
-
-describe("list", () => {
-  it("returns secret metadata array", async () => {
-    const meta = [
-      {
-        key: "FOO",
-        created_at: 1,
-        expires_at: null,
-        max_reads: null,
-        read_count: 0,
-      },
-    ];
-    mockFetch.mockResolvedValueOnce(ok({ secrets: meta }));
-    expect(await sirr.list()).toEqual(meta);
-  });
-});
-
-// ── delete ─────────────────────────────────────────────────
-
-describe("delete", () => {
-  it("returns true when secret existed", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ deleted: true }));
-    expect(await sirr.delete("FOO")).toBe(true);
-  });
-
-  it("returns false on 404", async () => {
-    mockFetch.mockResolvedValueOnce(err(404, { error: "not found" }));
-    expect(await sirr.delete("FOO")).toBe(false);
-  });
-});
-
-// ── prune ──────────────────────────────────────────────────
-
-describe("prune", () => {
-  it("returns pruned count", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ pruned: 3 }));
-    expect(await sirr.prune()).toBe(3);
-  });
-});
-
-// ── pullAll ────────────────────────────────────────────────
-
-describe("pullAll", () => {
-  it("lists then fetches each value", async () => {
-    mockFetch
-      .mockResolvedValueOnce(
-        ok({
-          secrets: [
-            { key: "A", created_at: 0, expires_at: null, max_reads: null, read_count: 0 },
-            { key: "B", created_at: 0, expires_at: null, max_reads: null, read_count: 0 },
-          ],
-        }),
-      )
-      .mockResolvedValueOnce(ok({ key: "A", value: "1" }))
-      .mockResolvedValueOnce(ok({ key: "B", value: "2" }));
-
-    const result = await sirr.pullAll();
-    expect(result).toEqual({ A: "1", B: "2" });
-  });
-});
-
-// ── withSecrets ────────────────────────────────────────────
-
-describe("withSecrets", () => {
-  it("injects env vars and restores them after", async () => {
-    mockFetch
-      .mockResolvedValueOnce(
-        ok({
-          secrets: [
-            { key: "INJECTED", created_at: 0, expires_at: null, max_reads: null, read_count: 0 },
-          ],
-        }),
-      )
-      .mockResolvedValueOnce(ok({ key: "INJECTED", value: "hello" }));
-
-    delete process.env.INJECTED;
-    let inside = "";
-
-    await sirr.withSecrets(async () => {
-      inside = process.env.INJECTED ?? "";
-    });
-
-    expect(inside).toBe("hello");
-    expect(process.env.INJECTED).toBeUndefined();
-  });
-
-  it("restores env vars even if fn throws", async () => {
-    mockFetch
-      .mockResolvedValueOnce(
-        ok({
-          secrets: [
-            { key: "TEMP", created_at: 0, expires_at: null, max_reads: null, read_count: 0 },
-          ],
-        }),
-      )
-      .mockResolvedValueOnce(ok({ key: "TEMP", value: "x" }));
-
-    delete process.env.TEMP;
-    await expect(
-      sirr.withSecrets(async () => {
-        throw new Error("boom");
-      }),
-    ).rejects.toThrow("boom");
-
-    expect(process.env.TEMP).toBeUndefined();
-  });
-});
-
-// ── Non-JSON error body (nginx 502 etc.) ───────────────────
-
-describe("request() resilience", () => {
-  it("handles HTML error bodies gracefully", async () => {
-    mockFetch.mockResolvedValueOnce(errHtml(502, "<html><body>502 Bad Gateway</body></html>"));
-    await expect(sirr.list()).rejects.toThrow(SirrError);
-    await expect(
-      (async () => {
-        mockFetch.mockResolvedValueOnce(errHtml(502, "<html><body>502 Bad Gateway</body></html>"));
-        try {
-          await sirr.list();
-        } catch (e) {
-          expect((e as SirrError).status).toBe(502);
-          expect((e as SirrError).message).toContain("502");
-          throw e;
-        }
-      })(),
-    ).rejects.toThrow();
-  });
-
-  it("network error propagates", async () => {
-    mockFetch.mockRejectedValueOnce(new TypeError("fetch failed"));
-    await expect(sirr.list()).rejects.toThrow("fetch failed");
-  });
-});
-
-// ── audit / getAuditLog ───────────────────────────────────
-
-describe("audit", () => {
-  it("returns audit events array", async () => {
-    const events = [
-      {
-        id: 1,
-        timestamp: 1000,
-        action: "secret.create",
-        key: "K",
-        source_ip: "127.0.0.1",
-        success: true,
-        detail: null,
-      },
-    ];
-    mockFetch.mockResolvedValueOnce(ok({ events }));
-    expect(await sirr.audit()).toEqual(events);
-  });
-
-  it("sends query params", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ events: [] }));
-    await sirr.audit({ since: 100, action: "secret.create", limit: 10 });
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toContain("since=100");
-    expect(url).toContain("action=secret.create");
-    expect(url).toContain("limit=10");
-  });
-
-  it("sends key query param for filtering", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ events: [] }));
-    await sirr.audit({ key: "MY_SECRET" });
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toContain("key=MY_SECRET");
-  });
-});
-
-describe("getAuditLog (deprecated alias)", () => {
-  it("delegates to audit()", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ events: [] }));
-    const result = await sirr.getAuditLog();
-    expect(result).toEqual([]);
-  });
-});
-
-// ── webhooks ──────────────────────────────────────────────
-
-describe("createWebhook", () => {
-  it("sends POST /webhooks", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "wh_1", secret: "s3cr3t" }));
-    const result = await sirr.createWebhook("https://example.com/hook");
-    expect(result).toEqual({ id: "wh_1", secret: "s3cr3t" });
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/webhooks");
-    expect(opts.method).toBe("POST");
-  });
-});
-
-describe("listWebhooks", () => {
-  it("returns webhook array", async () => {
-    const webhooks = [{ id: "wh_1", url: "https://example.com", events: ["*"], created_at: 1000 }];
-    mockFetch.mockResolvedValueOnce(ok({ webhooks }));
-    expect(await sirr.listWebhooks()).toEqual(webhooks);
-  });
-});
-
-describe("deleteWebhook", () => {
-  it("returns true on success", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ deleted: true }));
-    expect(await sirr.deleteWebhook("wh_1")).toBe(true);
-  });
-
-  it("returns false on 404", async () => {
-    mockFetch.mockResolvedValueOnce(err(404, { error: "not found" }));
-    expect(await sirr.deleteWebhook("wh_x")).toBe(false);
-  });
-});
-
-// ── check (HEAD) ──────────────────────────────────────────
-
-function headOk(headers: Record<string, string>): Response {
-  return {
-    ok: true,
-    status: 200,
-    headers: {
-      get: (k: string) => headers[k] ?? null,
-    },
-  } as unknown as Response;
-}
-
-function headSealed(headers: Record<string, string>): Response {
-  return {
-    ok: false,
-    status: 410,
-    headers: {
-      get: (k: string) => headers[k] ?? null,
-    },
-  } as unknown as Response;
-}
-
-describe("check", () => {
-  const activeHeaders = {
-    "X-Sirr-Status": "active",
-    "X-Sirr-Read-Count": "2",
-    "X-Sirr-Reads-Remaining": "8",
-    "X-Sirr-Delete": "true",
-    "X-Sirr-Created-At": "1700000000",
-    "X-Sirr-Expires-At": "1700086400",
-  };
-
-  it("sends HEAD to correct path", async () => {
-    mockFetch.mockResolvedValueOnce(headOk(activeHeaders));
-    await sirr.check("FOO");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/secrets/FOO");
-    expect(opts.method).toBe("HEAD");
-  });
-
-  it("returns SecretStatus on 200", async () => {
-    mockFetch.mockResolvedValueOnce(headOk(activeHeaders));
-    const result = await sirr.check("FOO");
-    expect(result).toEqual({
-      status: "active",
-      readCount: 2,
-      readsRemaining: 8,
-      burnOnRead: true,
-      createdAt: 1700000000,
-      expiresAt: 1700086400,
-    });
-  });
-
-  it("returns sealed status on 410", async () => {
-    mockFetch.mockResolvedValueOnce(
-      headSealed({ ...activeHeaders, "X-Sirr-Status": "sealed", "X-Sirr-Reads-Remaining": "0" }),
-    );
-    const result = await sirr.check("FOO");
-    expect(result?.status).toBe("sealed");
-    expect(result?.readsRemaining).toBe(0);
-  });
-
-  it("returns null on 404", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: false,
-      status: 404,
-      headers: { get: () => null },
-    } as unknown as Response);
-    expect(await sirr.check("GONE")).toBeNull();
-  });
-
-  it("handles unlimited reads", async () => {
-    mockFetch.mockResolvedValueOnce(
-      headOk({ ...activeHeaders, "X-Sirr-Reads-Remaining": "unlimited" }),
-    );
-    const result = await sirr.check("FOO");
-    expect(result?.readsRemaining).toBe("unlimited");
-  });
-
-  it("returns null expiresAt when header absent", async () => {
-    const { "X-Sirr-Expires-At": _, ...noExpiry } = activeHeaders;
-    mockFetch.mockResolvedValueOnce(headOk(noExpiry));
-    const result = await sirr.check("FOO");
-    expect(result?.expiresAt).toBeNull();
-  });
-
-  it("uses org-scoped path", async () => {
-    const orgSirr = new SirrClient({
-      server: "http://localhost:39999",
-      token: "test",
-      org: "acme",
-    });
-    mockFetch.mockResolvedValueOnce(headOk(activeHeaders));
-    await orgSirr.check("FOO");
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/secrets/FOO");
-  });
-
-  it("throws on empty key", async () => {
-    await expect(sirr.check("")).rejects.toThrow("key must not be empty");
-  });
-
-  it("throws SirrError on unexpected non-2xx", async () => {
+  it("handles empty error body gracefully", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 500,
-      headers: { get: () => null },
+      headers: new Headers(),
+      json: () => Promise.reject(new Error("empty")),
+      text: () => Promise.reject(new Error("empty")),
     } as unknown as Response);
-    await expect(sirr.check("FOO")).rejects.toThrow(SirrError);
-  });
-});
-
-// ── patch ─────────────────────────────────────────────────
-
-describe("patch", () => {
-  it("sends PATCH /secrets/{key} with only provided fields", async () => {
-    mockFetch.mockResolvedValueOnce(
-      ok({ key: "FOO", created_at: 0, expires_at: null, max_reads: null, read_count: 0 }),
-    );
-    await sirr.patch("FOO", { ttl: 120 });
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/secrets/FOO");
-    expect(opts.method).toBe("PATCH");
-    expect(JSON.parse(opts.body as string)).toEqual({ ttl_seconds: 120 });
-  });
-
-  it("maps value and reads fields correctly", async () => {
-    mockFetch.mockResolvedValueOnce(
-      ok({ key: "FOO", created_at: 0, expires_at: null, max_reads: 5, read_count: 0 }),
-    );
-    await sirr.patch("FOO", { value: "newval", reads: 5 });
-    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(opts.body as string)).toEqual({ value: "newval", max_reads: 5 });
-  });
-
-  it("returns null on 404", async () => {
-    mockFetch.mockResolvedValueOnce(err(404, { error: "not found" }));
-    expect(await sirr.patch("GONE", { ttl: 60 })).toBeNull();
-  });
-
-  it("throws on empty key", async () => {
-    await expect(sirr.patch("", { ttl: 60 })).rejects.toThrow("key must not be empty");
-  });
-
-  it("uses org-scoped path", async () => {
-    const orgSirr = new SirrClient({
-      server: "http://localhost:39999",
-      token: "test",
-      org: "acme",
-    });
-    mockFetch.mockResolvedValueOnce(
-      ok({ key: "FOO", created_at: 0, expires_at: null, max_reads: null, read_count: 0 }),
-    );
-    await orgSirr.patch("FOO", { ttl: 60 });
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/secrets/FOO");
-  });
-});
-
-// ── Org-scoped path prefix ────────────────────────────────
-
-describe("org-scoped client", () => {
-  const orgSirr = new SirrClient({ server: "http://localhost:39999", token: "test", org: "acme" });
-
-  it("set uses /orgs/{org}/secrets path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ key: "FOO" }));
-    await orgSirr.set("FOO", "bar");
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/secrets");
-  });
-
-  it("get uses /orgs/{org}/secrets/{key} path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ key: "FOO", value: "bar" }));
-    await orgSirr.get("FOO");
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/secrets/FOO");
-  });
-
-  it("list uses /orgs/{org}/secrets path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ secrets: [] }));
-    await orgSirr.list();
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/secrets");
-  });
-
-  it("delete uses /orgs/{org}/secrets/{key} path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ deleted: true }));
-    await orgSirr.delete("FOO");
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/secrets/FOO");
-  });
-
-  it("prune uses /orgs/{org}/prune path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ pruned: 0 }));
-    await orgSirr.prune();
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/prune");
-  });
-
-  it("getAuditLog uses /orgs/{org}/audit path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ events: [] }));
-    await orgSirr.getAuditLog();
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/audit");
-  });
-
-  it("createWebhook uses /orgs/{org}/webhooks path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "wh_1", secret: "s" }));
-    await orgSirr.createWebhook("https://example.com/hook");
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/webhooks");
-  });
-
-  it("deleteWebhook uses /orgs/{org}/webhooks/{id} path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ deleted: true }));
-    await orgSirr.deleteWebhook("wh_1");
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/orgs/acme/webhooks/wh_1");
-  });
-});
-
-describe("non-org client paths", () => {
-  it("push uses /secrets path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "abc" }));
-    await sirr.push("bar");
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/secrets");
-  });
-
-  it("prune uses /prune path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ pruned: 0 }));
-    await sirr.prune();
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/prune");
-  });
-
-  it("getAuditLog uses /audit path", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ events: [] }));
-    await sirr.getAuditLog();
-    const [url] = mockFetch.mock.calls[0] as [string];
-    expect(url).toBe("http://localhost:39999/audit");
-  });
-});
-
-// ── /me endpoints ─────────────────────────────────────────
-
-describe("me", () => {
-  it("sends GET /me", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "p_1", name: "alice" }));
-    const result = await sirr.me();
-    expect(result).toEqual({ id: "p_1", name: "alice" });
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/me");
-    expect(opts.method).toBe("GET");
-  });
-});
-
-describe("updateMe", () => {
-  it("sends PATCH /me with metadata body", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "p_1", name: "bob" }));
-    await sirr.updateMe({ metadata: { team: "platform" } });
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/me");
-    expect(opts.method).toBe("PATCH");
-    expect(JSON.parse(opts.body as string)).toEqual({ metadata: { team: "platform" } });
-  });
-});
-
-describe("createKey", () => {
-  it("sends POST /me/keys with correct fields", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "k_1", key: "sirr_key_abc" }));
-    await sirr.createKey({ name: "ci", valid_for_seconds: 86400 });
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/me/keys");
-    expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body as string)).toMatchObject({ name: "ci", valid_for_seconds: 86400 });
-  });
-});
-
-describe("deleteKey", () => {
-  it("sends DELETE /me/keys/{keyId}", async () => {
-    mockFetch.mockResolvedValueOnce(ok({}));
-    await sirr.deleteKey("k_1");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/me/keys/k_1");
-    expect(opts.method).toBe("DELETE");
-  });
-});
-
-// ── Admin endpoints ───────────────────────────────────────
-
-describe("createOrg", () => {
-  it("sends POST /orgs with name", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "org_1", name: "acme" }));
-    const result = await sirr.createOrg({ name: "acme" });
-    expect(result).toEqual({ id: "org_1", name: "acme" });
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/orgs");
-    expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body as string)).toEqual({ name: "acme" });
-  });
-});
-
-describe("listOrgs", () => {
-  it("sends GET /orgs and unwraps envelope", async () => {
-    const orgs = [{ id: "org_1", name: "acme" }];
-    mockFetch.mockResolvedValueOnce(ok({ orgs }));
-    const result = await sirr.listOrgs();
-    expect(result).toEqual(orgs);
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/orgs");
-    expect(opts.method).toBe("GET");
-  });
-});
-
-describe("deleteOrg", () => {
-  it("sends DELETE /orgs/{orgId}", async () => {
-    mockFetch.mockResolvedValueOnce(ok({}));
-    await sirr.deleteOrg("org_1");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/orgs/org_1");
-    expect(opts.method).toBe("DELETE");
-  });
-});
-
-describe("createPrincipal", () => {
-  it("sends POST /orgs/{orgId}/principals with name and role", async () => {
-    mockFetch.mockResolvedValueOnce(
-      ok({ id: "p_1", name: "alice", role: "reader", org_id: "org_1" }),
-    );
-    const result = await sirr.createPrincipal("org_1", { name: "alice", role: "reader" });
-    expect(result.id).toBe("p_1");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/orgs/org_1/principals");
-    expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body as string)).toMatchObject({ name: "alice", role: "reader" });
-  });
-});
-
-describe("listPrincipals", () => {
-  it("sends GET /orgs/{orgId}/principals", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ principals: [] }));
-    await sirr.listPrincipals("org_1");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/orgs/org_1/principals");
-    expect(opts.method).toBe("GET");
-  });
-});
-
-describe("deletePrincipal", () => {
-  it("sends DELETE /orgs/{orgId}/principals/{principalId}", async () => {
-    mockFetch.mockResolvedValueOnce(ok({}));
-    await sirr.deletePrincipal("org_1", "p_1");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/orgs/org_1/principals/p_1");
-    expect(opts.method).toBe("DELETE");
-  });
-});
-
-describe("createRole", () => {
-  it("sends POST /orgs/{orgId}/roles with permission string", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ name: "reader", permissions: "rRlL" }));
-    const result = await sirr.createRole("org_1", { name: "reader", permissions: "rRlL" });
-    expect(result.name).toBe("reader");
-    expect(result.permissions).toBe("rRlL");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/orgs/org_1/roles");
-    expect(opts.method).toBe("POST");
-    expect(JSON.parse(opts.body as string)).toEqual({ name: "reader", permissions: "rRlL" });
-  });
-});
-
-describe("listRoles", () => {
-  it("sends GET /orgs/{orgId}/roles", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ roles: [] }));
-    await sirr.listRoles("org_1");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/orgs/org_1/roles");
-    expect(opts.method).toBe("GET");
-  });
-});
-
-describe("deleteRole", () => {
-  it("sends DELETE /orgs/{orgId}/roles/{roleName}", async () => {
-    mockFetch.mockResolvedValueOnce(ok({}));
-    await sirr.deleteRole("org_1", "admin");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://localhost:39999/orgs/org_1/roles/admin");
-    expect(opts.method).toBe("DELETE");
-  });
-});
-
-// ── Namespaced sub-clients ────────────────────────────────
-
-describe("sirr.webhooks sub-client", () => {
-  it("create delegates to createWebhook", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "wh_1", secret: "s" }));
-    const result = await sirr.webhooks.create("https://example.com/hook");
-    expect(result).toEqual({ id: "wh_1", secret: "s" });
-  });
-
-  it("list delegates to listWebhooks", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ webhooks: [] }));
-    const result = await sirr.webhooks.list();
-    expect(result).toEqual([]);
-  });
-
-  it("delete delegates to deleteWebhook", async () => {
-    mockFetch.mockResolvedValueOnce(ok({}));
-    const result = await sirr.webhooks.delete("wh_1");
-    expect(result).toBe(true);
-  });
-});
-
-describe("sirr.orgs sub-client", () => {
-  it("create delegates to createOrg", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ id: "org_1", name: "test" }));
-    const result = await sirr.orgs.create({ name: "test" });
-    expect(result.id).toBe("org_1");
-  });
-
-  it("list delegates to listOrgs", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ orgs: [] }));
-    const result = await sirr.orgs.list();
-    expect(result).toEqual([]);
-  });
-
-  it("delete delegates to deleteOrg", async () => {
-    mockFetch.mockResolvedValueOnce(ok({}));
-    await sirr.orgs.delete("org_1");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/orgs/org_1");
-    expect(opts.method).toBe("DELETE");
-  });
-});
-
-describe("sirr.principals sub-client", () => {
-  it("create delegates to createPrincipal", async () => {
-    mockFetch.mockResolvedValueOnce(
-      ok({ id: "p_1", name: "alice", role: "reader", org_id: "org_1" }),
-    );
-    const result = await sirr.principals.create("org_1", { name: "alice", role: "reader" });
-    expect(result.id).toBe("p_1");
-  });
-
-  it("list delegates to listPrincipals", async () => {
-    mockFetch.mockResolvedValueOnce(ok({ principals: [] }));
-    const result = await sirr.principals.list("org_1");
-    expect(result).toEqual([]);
-  });
-
-  it("delete delegates to deletePrincipal", async () => {
-    mockFetch.mockResolvedValueOnce(ok({}));
-    await sirr.principals.delete("org_1", "p_1");
-    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/orgs/org_1/principals/p_1");
-    expect(opts.method).toBe("DELETE");
+    try {
+      await sirr.push("val");
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SirrError);
+      expect((e as SirrError).status).toBe(500);
+    }
   });
 });

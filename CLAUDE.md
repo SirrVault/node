@@ -7,25 +7,29 @@ Published to npm as `@sirrlock/node`. Zero production dependencies — uses nati
 
 ## What Lives Here
 
-- `src/index.ts` — `SirrClient` class and `SirrError` (the library)
+- `src/index.ts` — `SirrClient` class, `SirrError`, and all types (the library)
 - `src/cli.ts` — CLI entrypoint (`npx @sirrlock/node push ...`)
-- `src/index.test.ts` — unit tests (SirrClient, SirrError, validation, resilience)
+- `src/index.test.ts` — unit tests (mock-fetch, mirrors server http_api.rs tests)
 - `src/cli.test.ts` — CLI arg parser tests
 
 ## API Surface
 
 ```typescript
 class SirrClient {
-  constructor(opts: { server?: string; token: string })  // throws if token empty
+  constructor(opts?: { server?: string; key?: string })
 
-  push(key: string, value: string, opts?: { ttl?: number; reads?: number }): Promise<void>
-  get(key: string): Promise<string | null>   // null if burned/expired
-  delete(key: string): Promise<boolean>
-  list(): Promise<SecretMeta[]>
-  pullAll(): Promise<Record<string, string>>
-  withSecrets<T>(fn: () => Promise<T>): Promise<T>
-  prune(): Promise<number>
+  // Secrets
+  push(value: string, opts?: { ttl_seconds?: number; reads?: number; prefix?: string }): Promise<SecretResponse>
+  get(hash: string): Promise<string | null>        // null on 410 (gone/burned/expired)
+  inspect(hash: string): Promise<SecretStatus | null>  // HEAD, does not consume a read
+  patch(hash: string, opts: PatchOptions): Promise<SecretResponse>  // owner key required
+  burn(hash: string): Promise<void>                // DELETE, 204 on success
+  audit(hash: string): Promise<AuditResponse>      // owner key required
+  list(): Promise<SecretMetadata[]>                // authenticated, own secrets only
+
+  // Server info
   health(): Promise<{ status: string }>
+  version(): Promise<{ version: string }>
 }
 
 class SirrError extends Error {
@@ -45,14 +49,14 @@ class SirrError extends Error {
 ## Key Rules
 
 - `SirrError` is exported — consumers can do `instanceof` checks
-- `get()` returns `null` on 404 — never throw for not-found
+- `get()` returns `null` on 410 — never throw for gone/burned/expired
+- `inspect()` returns `null` on 410 — same rationale
 - All other non-2xx responses throw `SirrError`
-- `push()`, `get()`, `delete()` validate that key is non-empty
-- Constructor validates that token is non-empty
+- `get()`, `inspect()`, `patch()`, `burn()`, `audit()` validate that hash is non-empty
+- Constructor allows empty key (anonymous operations are valid)
 - `request()` checks `res.ok` before `res.json()` — handles HTML error pages (nginx 502 etc.)
-- `health()` throws `SirrError` on non-2xx (does not send auth header)
+- `health()` and `version()` throw `SirrError` on non-2xx (do not send auth header)
 - Never log secret values
-- `withSecrets()` must restore original env on exit, even on exception
 - Keep zero production dependencies
 - Test files excluded from `tsconfig.json` — never compiled into `dist/`
 
@@ -73,9 +77,8 @@ Matrix: Node 18, 20, 22. Steps: install → lint → build → test.
 
 ## Relationship to sirr/
 
-This repo was extracted from `sirr/packages/node/`. The MCP server (`@sirrlock/mcp`)
-has its own repo at [sirrlock/mcp](https://github.com/sirrlock/mcp). This client
-has an independent release cadence once the HTTP API stabilises.
+The MCP server (`@sirrlock/mcp`) has its own repo at [sirrlock/mcp](https://github.com/sirrlock/mcp).
+This client has an independent release cadence.
 
 ## Pre-Commit Checklist
 

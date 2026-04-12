@@ -8,290 +8,74 @@
 // ── Constructor options ───────────────────────────────────────────────────────
 
 export interface SirrClientOptions {
-  /** Sirr server base URL. Default: https://sirr.sirrlock.com */
+  /** Sirr server base URL. Default: https://sirrlock.com */
   server?: string;
-  /** Bearer token — master key or principal API key. Omit for anonymous push. */
-  token?: string;
-  /**
-   * Org ID for multi-tenant mode. When set, all secret, audit, webhook, and
-   * prune operations are scoped under `/orgs/{org}/`.
-   */
-  org?: string;
+  /** Bearer API key for authenticated operations. Omit for anonymous push/get. */
+  key?: string;
 }
 
-// ── Secret operation options ──────────────────────────────────────────────────
+// ── Request options ──────────────────────────────────────────────────────────
 
-/** Options for `push()` — anonymous public dead-drop. */
 export interface PushOptions {
   /** Time-to-live in seconds. Omit for no expiration. */
-  ttl?: number;
+  ttl_seconds?: number;
   /** Maximum reads before the secret is burned. */
   reads?: number;
-}
-
-/** Options for `set()` — org-scoped named secret. */
-export interface SetOptions {
-  /** Time-to-live in seconds. Omit for no expiration. */
-  ttl?: number;
-  /** Maximum reads before the secret is burned or sealed. */
-  reads?: number;
-  /**
-   * Whether to permanently delete the secret after reaching `reads`.
-   * `true` (default) = burn; `false` = seal (still patchable via `patch()`).
-   */
-  burnOnRead?: boolean;
-  /**
-   * Webhook URL to call when this secret is read or burned.
-   * Must be HTTPS and within the server's allowed origins.
-   */
-  webhookUrl?: string;
-  /**
-   * Restrict reads to specific principal key names (org-scoped secrets only).
-   * Omit to allow any key with read permission.
-   */
-  allowedKeys?: string[];
-  /**
-   * Override the org for this call. Falls back to the client-level `org`.
-   */
-  org?: string;
+  /** Short prefix prepended to the hash. Must match [a-z0-9_-]{1,16}. */
+  prefix?: string;
 }
 
 export interface PatchOptions {
-  /** Replace the stored value. */
+  /** New value to store. */
   value?: string;
   /** New TTL in seconds from now (resets the expiry clock). */
-  ttl?: number;
-  /** New maximum read count. */
+  ttl_seconds?: number;
+  /** New maximum read count (resets the counter). */
   reads?: number;
 }
 
-/**
- * Metadata returned by `check()` (HEAD request).
- * Does not consume a read counter.
- */
-export interface SecretStatus {
-  /** `"active"` = readable; `"sealed"` = reads exhausted but not deleted. */
-  status: "active" | "sealed";
-  readCount: number;
-  readsRemaining: number | "unlimited";
-  /** `true` = burns on read; `false` = seals on read. */
-  burnOnRead: boolean;
-  createdAt: number;
-  expiresAt: number | null;
-}
+// ── Response types ───────────────────────────────────────────────────────────
 
-// ── Response types ────────────────────────────────────────────────────────────
-
-/** Response from `push()` — anonymous public dead-drop. */
-export interface PushResponse {
-  /** 64-character hex ID used to retrieve the secret via `get(id)`. */
-  id: string;
-}
-
-/** Response from `set()` — org-scoped named secret. */
-export interface SetResponse {
-  /** The key under which the secret was stored. */
-  key: string;
-}
-
-export interface SecretMeta {
-  key: string;
-  created_at: number;
-  expires_at: number | null;
-  max_reads: number | null;
-  read_count: number;
-  /**
-   * Whether the secret burns (`true`) or seals (`false`) on read-limit.
-   * Only present on secrets that were created with an explicit `burnOnRead`
-   * value or in responses from `patch()`.
-   */
-  delete?: boolean;
-  /** ID of the principal that created this secret (org secrets only). */
-  owner_id?: string;
-}
-
-export interface AuditEvent {
-  id: number;
-  timestamp: number;
-  action: string;
-  key: string | null;
-  source_ip: string;
-  success: boolean;
-  detail: string | null;
-  org_id?: string;
-  principal_id?: string;
-}
-
-/** Filter parameters for audit log queries. */
-export interface AuditFilter {
-  /** Return events at or after this Unix timestamp. */
-  since?: number;
-  /** Return events at or before this Unix timestamp. */
-  until?: number;
-  /** Filter by action type, e.g. `"secret.read"`. */
-  action?: string;
-  /** Filter by secret key name (org-scoped audit only). */
-  key?: string;
-  /** Maximum number of entries to return (default 100, max 1000). */
-  limit?: number;
-}
-
-/** @deprecated Use `AuditFilter`. */
-export type AuditOptions = AuditFilter;
-
-export interface Webhook {
-  id: string;
+/** Response from POST /secret and PATCH /secret/{hash}. */
+export interface SecretResponse {
+  hash: string;
   url: string;
-  events: string[];
+  expires_at: number | null;
+  reads_remaining: number | null;
+  owned: boolean;
+}
+
+/** Metadata returned by HEAD /secret/{hash}. Does not consume a read. */
+export interface SecretStatus {
+  created: string | null;
+  ttlExpires: string | null;
+  readsRemaining: number | null;
+  owned: boolean;
+}
+
+/** Single audit event from GET /secret/{hash}/audit. */
+export interface AuditEvent {
+  type: string;
+  at: number;
+  ip: string;
+}
+
+/** Response from GET /secret/{hash}/audit. */
+export interface AuditResponse {
+  hash: string;
   created_at: number;
+  events: AuditEvent[];
 }
 
-export interface WebhookCreateResult {
-  id: string;
-  /** Signing secret — shown only once, save immediately. */
-  secret: string;
-}
-
-// ── Org / principal / role types ──────────────────────────────────────────────
-
-export interface Org {
-  id: string;
-  name: string;
-  metadata?: Record<string, string>;
-  created_at?: number;
-}
-
-export interface Principal {
-  id: string;
-  name: string;
-  role: string;
-  org_id: string;
-  metadata?: Record<string, string>;
-  created_at?: number;
-}
-
-export interface Role {
-  name: string;
-  /** Permission letter string, e.g. `"rRlL"`. */
-  permissions: string;
-  org_id?: string;
-  builtin?: boolean;
-  created_at?: number;
-}
-
-export interface PrincipalKey {
-  id: string;
-  name: string;
-  valid_after: number;
-  valid_before: number;
+/** Metadata for a secret from GET /secrets. */
+export interface SecretMetadata {
+  hash: string;
   created_at: number;
-}
-
-export interface MeResponse {
-  id: string;
-  name: string;
-  role: string;
-  org_id: string;
-  metadata: Record<string, string>;
-  created_at: number;
-  keys: PrincipalKey[];
-}
-
-export interface PrincipalKeyCreateResult {
-  id: string;
-  name: string;
-  /** Raw API key — shown only once, save immediately. */
-  key: string;
-  valid_after: number;
-  valid_before: number;
-}
-
-// ── Admin request options ─────────────────────────────────────────────────────
-
-export interface CreateOrgOptions {
-  name: string;
-  metadata?: Record<string, string>;
-}
-
-export interface CreatePrincipalOptions {
-  name: string;
-  /**
-   * Role to assign. Built-in: `reader`, `writer`, `admin`, `owner`.
-   * Custom roles can be created per-org.
-   */
-  role: string;
-  metadata?: Record<string, string>;
-}
-
-export interface CreateRoleOptions {
-  name: string;
-  /**
-   * Permission letter string. Each letter enables a permission bit.
-   * Examples: `"r"` (read), `"rRlL"` (read + list), `"rRlLcCpPaAmMdD"` (full).
-   *
-   * | Letter | Permission |
-   * |--------|-----------|
-   * | `r`    | ReadOrg |
-   * | `R`    | ReadMy |
-   * | `l`    | ListOrg |
-   * | `L`    | ListMy |
-   * | `c`    | CreateOrg |
-   * | `C`    | CreateMy |
-   * | `p`    | PatchOrg |
-   * | `P`    | PatchMy |
-   * | `d`    | DeleteOrg |
-   * | `D`    | DeleteMy |
-   * | `a`    | AuditRead |
-   * | `m`    | ManageOrg |
-   */
-  permissions: string;
-}
-
-export interface CreateKeyOptions {
-  /** Human-readable label for this key. */
-  name: string;
-  /** Lifetime in seconds from now. Defaults to 1 year. */
-  valid_for_seconds?: number;
-  /** Absolute expiry as a Unix timestamp. Overrides `valid_for_seconds`. */
-  valid_before?: number;
-}
-
-export interface PatchMeOptions {
-  /** Replaces the entire metadata map on the current principal. */
-  metadata: Record<string, string>;
-}
-
-// ── Namespaced sub-client interfaces ─────────────────────────────────────────
-
-export interface WebhookClient {
-  /**
-   * Register a webhook. Returns the ID and signing secret.
-   * @param url   HTTPS endpoint to receive events
-   * @param opts  Optional event filter (default `["*"]`)
-   */
-  create(url: string, opts?: { events?: string[] }): Promise<WebhookCreateResult>;
-  /** List all registered webhooks. Signing secrets are redacted. */
-  list(): Promise<Webhook[]>;
-  /** Delete a webhook by ID. Returns false if not found. */
-  delete(id: string): Promise<boolean>;
-}
-
-export interface OrgClient {
-  /** Create a new organization. Requires master key. */
-  create(opts: CreateOrgOptions): Promise<Org>;
-  /** List all organizations. Requires master key. */
-  list(): Promise<Org[]>;
-  /** Delete an organization by ID. Requires master key. */
-  delete(id: string): Promise<void>;
-}
-
-export interface PrincipalClient {
-  /** Create a principal within an org. Requires master key. */
-  create(orgId: string, opts: CreatePrincipalOptions): Promise<Principal>;
-  /** List all principals in an org. Requires master key. */
-  list(orgId: string): Promise<Principal[]>;
-  /** Delete a principal by ID. Requires master key. */
-  delete(orgId: string, principalId: string): Promise<void>;
+  ttl_expires_at: number | null;
+  reads_remaining: number | null;
+  burned: boolean;
+  burned_at: number | null;
+  owned: boolean;
 }
 
 // ── Error ─────────────────────────────────────────────────────────────────────
@@ -306,97 +90,39 @@ export class SirrError extends Error {
   }
 }
 
-/**
- * Thrown by `set()` when a secret with the given key already exists (HTTP 409).
- * Delete the existing secret first, then call `set()` again.
- */
-export class SecretExistsError extends Error {
-  constructor(key: string) {
-    super(`Key '${key}' already exists. Delete it first.`);
-    this.name = "SecretExistsError";
-  }
-}
-
-// ── Validation ────────────────────────────────────────────────────────────────
-
-function validateKey(key: string): void {
-  if (!key) {
-    throw new Error("Secret key must not be empty");
-  }
-}
-
 // ── Client ────────────────────────────────────────────────────────────────────
 
 export class SirrClient {
   private readonly server: string;
-  private readonly token: string;
-  private readonly org?: string;
+  private readonly key: string;
 
-  /** Webhook management — `sirr.webhooks.create/list/delete`. */
-  readonly webhooks: WebhookClient;
-
-  /** Organization management — `sirr.orgs.create/list/delete`. Requires master key. */
-  readonly orgs: OrgClient;
-
-  /** Principal management — `sirr.principals.create/list/delete`. Requires master key. */
-  readonly principals: PrincipalClient;
-
-  constructor(opts: SirrClientOptions) {
-    this.server = (opts.server ?? "https://sirr.sirrlock.com").replace(/\/$/, "");
-    this.token = opts.token ?? "";
-    this.org = opts.org;
-
-    this.webhooks = {
-      create: (url, whOpts?) => this.createWebhook(url, whOpts),
-      list: () => this.listWebhooks(),
-      delete: (id) => this.deleteWebhook(id),
-    };
-
-    this.orgs = {
-      create: (o) => this.createOrg(o),
-      list: () => this.listOrgs(),
-      delete: (id) => this.deleteOrg(id),
-    };
-
-    this.principals = {
-      create: (orgId, o) => this.createPrincipal(orgId, o),
-      list: (orgId) => this.listPrincipals(orgId),
-      delete: (orgId, principalId) => this.deletePrincipal(orgId, principalId),
-    };
+  constructor(opts: SirrClientOptions = {}) {
+    this.server = (opts.server ?? "https://sirrlock.com").replace(/\/$/, "");
+    this.key = opts.key ?? "";
   }
 
-  // ── Path helpers ────────────────────────────────────────────────────────────
+  // ── HTTP helpers ──────────────────────────────────────────────────────────
 
-  private secretsPath(key?: string): string {
-    const base = this.org ? `/orgs/${encodeURIComponent(this.org)}/secrets` : "/secrets";
-    return key ? `${base}/${encodeURIComponent(key)}` : base;
-  }
-
-  private auditPath(): string {
-    return this.org ? `/orgs/${encodeURIComponent(this.org)}/audit` : "/audit";
-  }
-
-  private webhooksPath(id?: string): string {
-    const base = this.org ? `/orgs/${encodeURIComponent(this.org)}/webhooks` : "/webhooks";
-    return id ? `${base}/${encodeURIComponent(id)}` : base;
-  }
-
-  private prunePath(): string {
-    return this.org ? `/orgs/${encodeURIComponent(this.org)}/prune` : "/prune";
-  }
-
-  // ── HTTP helpers ────────────────────────────────────────────────────────────
-
-  private headers(): Record<string, string> {
-    const h: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.token) h.Authorization = `Bearer ${this.token}`;
+  private headers(accept?: string): Record<string, string> {
+    const h: Record<string, string> = {};
+    if (accept) h.Accept = accept;
+    if (this.key) h.Authorization = `Bearer ${this.key}`;
     return h;
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; ok: boolean; data: T }> {
+    const headers: Record<string, string> = {
+      ...this.headers("application/json"),
+    };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+
     const res = await fetch(`${this.server}${path}`, {
       method,
-      headers: this.headers(),
+      headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
 
@@ -410,396 +136,121 @@ export class SirrClient {
           const text = await res.text();
           if (text) message = text.slice(0, 200);
         } catch {
-          // body already consumed or unreadable — keep default message
+          // body already consumed or unreadable
         }
       }
       throw new SirrError(res.status, message);
     }
 
-    return (await res.json()) as T;
+    if (res.status === 204) {
+      return { status: res.status, ok: true, data: undefined as T };
+    }
+
+    const data = (await res.json()) as T;
+    return { status: res.status, ok: true, data };
   }
 
-  // ── Health ──────────────────────────────────────────────────────────────────
+  // ── Health & Version ──────────────────────────────────────────────────────
 
   /** Check server health. Does not require authentication. */
   async health(): Promise<{ status: string }> {
     const res = await fetch(`${this.server}/health`);
-    if (!res.ok) {
-      throw new SirrError(res.status, "health check failed");
-    }
+    if (!res.ok) throw new SirrError(res.status, "health check failed");
     return res.json() as Promise<{ status: string }>;
   }
 
-  // ── Secrets ─────────────────────────────────────────────────────────────────
+  // ── Secrets ───────────────────────────────────────────────────────────────
 
-  /**
-   * Push an anonymous secret (public dead-drop).
-   *
-   * No key is required. The server assigns a random 64-char hex ID.
-   * Share the returned `id` with the recipient — they use `get(id)` to retrieve it.
-   *
-   * @param value Secret value (max 1 MiB)
-   * @param opts  TTL and read limit
-   * @returns `{ id }` — the hex ID for retrieval
-   */
-  async push(value: string, opts: PushOptions = {}): Promise<PushResponse> {
-    const body: Record<string, unknown> = {
-      value,
-      ttl_seconds: opts.ttl ?? null,
-      max_reads: opts.reads ?? null,
-    };
-    return this.request<PushResponse>("POST", "/secrets", body);
+  /** Create a secret. Returns metadata including the hash. */
+  async push(value: string, opts: PushOptions = {}): Promise<SecretResponse> {
+    const body: Record<string, unknown> = { value };
+    if (opts.ttl_seconds != null) body.ttl_seconds = opts.ttl_seconds;
+    if (opts.reads != null) body.reads = opts.reads;
+    if (opts.prefix != null) body.prefix = opts.prefix;
+    const { data } = await this.request<SecretResponse>("POST", "/secret", body);
+    return data;
   }
 
-  /**
-   * Store a named secret in an org vault.
-   *
-   * Requires `org` in the client config or in `opts`.
-   * Throws `SecretExistsError` if the key already exists (HTTP 409).
-   *
-   * @param key   Secret key name (1-256 chars, alphanumeric + `-_.`)
-   * @param value Secret value (max 1 MiB)
-   * @param opts  TTL, read limit, webhook, allowed keys, and optional org override
-   * @returns `{ key }` — the stored key name
-   */
-  async set(key: string, value: string, opts: SetOptions = {}): Promise<SetResponse> {
-    validateKey(key);
-    const org = opts.org ?? this.org;
-    if (!org) {
-      throw new Error("set() requires an org — pass org in SirrClientOptions or SetOptions");
-    }
-    const body: Record<string, unknown> = {
-      key,
-      value,
-      ttl_seconds: opts.ttl ?? null,
-      max_reads: opts.reads ?? null,
-    };
-    if (opts.burnOnRead !== undefined) body.delete = opts.burnOnRead;
-    if (opts.webhookUrl !== undefined) body.webhook_url = opts.webhookUrl;
-    if (opts.allowedKeys !== undefined) body.allowed_keys = opts.allowedKeys;
+  /** Read a secret's value. Consumes a read. Returns null if burned/expired. */
+  async get(hash: string): Promise<string | null> {
+    if (!hash) throw new Error("hash must not be empty");
     try {
-      return await this.request<SetResponse>(
-        "POST",
-        `/orgs/${encodeURIComponent(org)}/secrets`,
-        body,
+      const { data } = await this.request<{ value: string }>(
+        "GET",
+        `/secret/${encodeURIComponent(hash)}`,
       );
-    } catch (e) {
-      if (e instanceof SirrError && e.status === 409) {
-        throw new SecretExistsError(key);
-      }
-      throw e;
-    }
-  }
-
-  /**
-   * Update a secret's value, TTL, or read limit in place.
-   * Returns the updated metadata, or `null` if the secret does not exist.
-   *
-   * Only works on secrets created with `burnOnRead: false`. Attempting to
-   * patch a burn-on-read secret returns `409 Conflict` (thrown as `SirrError`).
-   */
-  async patch(key: string, opts: PatchOptions): Promise<SecretMeta | null> {
-    validateKey(key);
-    const body: Record<string, unknown> = {};
-    if (opts.value !== undefined) body.value = opts.value;
-    if (opts.ttl !== undefined) body.ttl_seconds = opts.ttl;
-    if (opts.reads !== undefined) body.max_reads = opts.reads;
-    try {
-      return await this.request<SecretMeta>("PATCH", this.secretsPath(key), body);
-    } catch (e) {
-      if (e instanceof SirrError && e.status === 404) return null;
-      throw e;
-    }
-  }
-
-  /**
-   * Retrieve a secret. Increments the read counter.
-   *
-   * - **Without org** (public): `id` is the 64-char hex returned by `push()`.
-   *   Routes to `GET /secrets/{id}`.
-   * - **With org** (named): `key` is the named key stored via `set()`.
-   *   Routes to `GET /orgs/{org}/secrets/{key}`.
-   *
-   * Returns `null` if the secret does not exist, has expired, has been
-   * burned, or is sealed.
-   */
-  async get(idOrKey: string, opts?: { org?: string }): Promise<string | null> {
-    if (!idOrKey) {
-      throw new Error("Secret key must not be empty");
-    }
-    const org = opts?.org ?? this.org;
-    const path = org
-      ? `/orgs/${encodeURIComponent(org)}/secrets/${encodeURIComponent(idOrKey)}`
-      : `/secrets/${encodeURIComponent(idOrKey)}`;
-    try {
-      const data = await this.request<{ value: string }>("GET", path);
       return data.value;
     } catch (e) {
-      if (e instanceof SirrError && (e.status === 404 || e.status === 410)) return null;
+      if (e instanceof SirrError && e.status === 410) return null;
       throw e;
     }
   }
 
-  /** List metadata for all active secrets. Values are never returned. */
-  async list(): Promise<SecretMeta[]> {
-    const data = await this.request<{ secrets: SecretMeta[] }>("GET", this.secretsPath());
-    return data.secrets;
-  }
-
-  /** Delete a secret immediately. Returns `true` if it existed. */
-  async delete(key: string): Promise<boolean> {
-    validateKey(key);
-    try {
-      await this.request("DELETE", this.secretsPath(key));
-      return true;
-    } catch (e) {
-      if (e instanceof SirrError && e.status === 404) return false;
-      throw e;
-    }
-  }
-
-  /**
-   * Inspect a secret's metadata without consuming a read counter (HEAD request).
-   * Returns `null` if the secret does not exist or has expired.
-   *
-   * Use this in AI agent workflows to verify a secret is still valid before
-   * fetching it and triggering an irreversible read.
-   */
-  async check(key: string): Promise<SecretStatus | null> {
-    validateKey(key);
-    const res = await fetch(`${this.server}${this.secretsPath(key)}`, {
+  /** Inspect a secret's metadata via HEAD without consuming a read. */
+  async inspect(hash: string): Promise<SecretStatus | null> {
+    if (!hash) throw new Error("hash must not be empty");
+    const res = await fetch(`${this.server}/secret/${encodeURIComponent(hash)}`, {
       method: "HEAD",
       headers: this.headers(),
     });
 
-    if (res.status === 404) return null;
-    if (!res.ok && res.status !== 410) {
-      throw new SirrError(res.status, "check failed");
-    }
+    if (res.status === 410) return null;
+    if (!res.ok) throw new SirrError(res.status, "inspect failed");
 
-    const readsRemainingRaw = res.headers.get("X-Sirr-Reads-Remaining");
-    const readsRemaining: number | "unlimited" =
-      readsRemainingRaw === "unlimited" ? "unlimited" : Number(readsRemainingRaw ?? 0);
-
-    const expiresAtRaw = res.headers.get("X-Sirr-Expires-At");
+    const h = res.headers;
+    const readsRaw = h.get("x-sirr-reads-remaining");
 
     return {
-      status: (res.headers.get("X-Sirr-Status") ?? "active") as "active" | "sealed",
-      readCount: Number(res.headers.get("X-Sirr-Read-Count") ?? 0),
-      readsRemaining,
-      burnOnRead: res.headers.get("X-Sirr-Delete") === "true",
-      createdAt: Number(res.headers.get("X-Sirr-Created-At") ?? 0),
-      expiresAt: expiresAtRaw ? Number(expiresAtRaw) : null,
+      created: h.get("x-sirr-created") ?? null,
+      ttlExpires: h.get("x-sirr-ttl-expires") ?? null,
+      readsRemaining: readsRaw != null ? Number(readsRaw) : null,
+      owned: h.get("x-sirr-owned") === "true",
     };
   }
 
-  /**
-   * Retrieve all secrets and return them as a `key → value` map.
-   * Each `get()` call increments the respective read counter.
-   */
+  /** Update an existing secret (owner key required). */
+  async patch(hash: string, opts: PatchOptions): Promise<SecretResponse> {
+    if (!hash) throw new Error("hash must not be empty");
+    const { data } = await this.request<SecretResponse>(
+      "PATCH",
+      `/secret/${encodeURIComponent(hash)}`,
+      opts,
+    );
+    return data;
+  }
+
+  /** Burn a secret immediately (DELETE). */
+  async burn(hash: string): Promise<void> {
+    if (!hash) throw new Error("hash must not be empty");
+    await this.request("DELETE", `/secret/${encodeURIComponent(hash)}`);
+  }
+
+  /** Get the audit trail for a secret (owner key required). */
+  async audit(hash: string): Promise<AuditResponse> {
+    if (!hash) throw new Error("hash must not be empty");
+    const { data } = await this.request<AuditResponse>(
+      "GET",
+      `/secret/${encodeURIComponent(hash)}/audit`,
+    );
+    return data;
+  }
+
+  /** List all secrets owned by the calling key. */
+  async list(): Promise<SecretMetadata[]> {
+    const { data } = await this.request<SecretMetadata[]>("GET", "/secrets");
+    return data;
+  }
+
+  /** Helper: list all owned secrets and fetch their values. Note: consumes a read for each. */
   async pullAll(): Promise<Record<string, string>> {
     const metas = await this.list();
     const result: Record<string, string> = {};
-    await Promise.all(
-      metas.map(async (m) => {
-        const value = await this.get(m.key);
-        if (value !== null) result[m.key] = value;
-      }),
-    );
-    return result;
-  }
-
-  /**
-   * Inject all vault secrets as `process.env` variables for the duration of
-   * `fn`, then restore the original values (even if `fn` throws).
-   *
-   * @example
-   * await sirr.withSecrets(async () => {
-   *   await execa('python', ['agent.py'])
-   * })
-   */
-  async withSecrets<T>(fn: () => Promise<T>): Promise<T> {
-    const secrets = await this.pullAll();
-    const originals: Record<string, string | undefined> = {};
-    for (const [k, v] of Object.entries(secrets)) {
-      originals[k] = process.env[k];
-      process.env[k] = v;
-    }
-    try {
-      return await fn();
-    } finally {
-      for (const [k, orig] of Object.entries(originals)) {
-        if (orig === undefined) delete process.env[k];
-        else process.env[k] = orig;
+    for (const meta of metas) {
+      if (!meta.burned) {
+        const val = await this.get(meta.hash);
+        if (val !== null) result[meta.hash] = val;
       }
     }
-  }
-
-  /** Trigger an immediate sweep of expired secrets on the server. Returns the pruned count. */
-  async prune(): Promise<number> {
-    const data = await this.request<{ pruned: number }>("POST", this.prunePath());
-    return data.pruned;
-  }
-
-  // ── Audit log ───────────────────────────────────────────────────────────────
-
-  /**
-   * Query the audit log.
-   *
-   * @example
-   * const events = await sirr.audit({ action: 'secret.read', limit: 50 })
-   */
-  async audit(opts: AuditFilter = {}): Promise<AuditEvent[]> {
-    const params = new URLSearchParams();
-    if (opts.since != null) params.set("since", String(opts.since));
-    if (opts.until != null) params.set("until", String(opts.until));
-    if (opts.action != null) params.set("action", opts.action);
-    if (opts.key != null) params.set("key", opts.key);
-    if (opts.limit != null) params.set("limit", String(opts.limit));
-    const qs = params.toString();
-    const data = await this.request<{ events: AuditEvent[] }>(
-      "GET",
-      `${this.auditPath()}${qs ? `?${qs}` : ""}`,
-    );
-    return data.events;
-  }
-
-  /** @deprecated Use `audit()`. */
-  async getAuditLog(opts: AuditFilter = {}): Promise<AuditEvent[]> {
-    return this.audit(opts);
-  }
-
-  // ── Webhooks ─────────────────────────────────────────────────────────────────
-  // Also available as `sirr.webhooks.create/list/delete`.
-
-  /** Register a webhook. Returns the ID and signing secret (shown once). */
-  async createWebhook(url: string, opts?: { events?: string[] }): Promise<WebhookCreateResult> {
-    const body: Record<string, unknown> = { url };
-    if (opts?.events) body.events = opts.events;
-    return this.request<WebhookCreateResult>("POST", this.webhooksPath(), body);
-  }
-
-  /** List all registered webhooks. Signing secrets are redacted. */
-  async listWebhooks(): Promise<Webhook[]> {
-    const data = await this.request<{ webhooks: Webhook[] }>("GET", this.webhooksPath());
-    return data.webhooks;
-  }
-
-  /** Delete a webhook by ID. Returns `false` if not found. */
-  async deleteWebhook(id: string): Promise<boolean> {
-    try {
-      await this.request("DELETE", this.webhooksPath(id));
-      return true;
-    } catch (e) {
-      if (e instanceof SirrError && e.status === 404) return false;
-      throw e;
-    }
-  }
-
-  // ── /me ──────────────────────────────────────────────────────────────────────
-
-  /** Get the current principal's profile, role, and key list. */
-  async me(): Promise<MeResponse> {
-    return this.request<MeResponse>("GET", "/me");
-  }
-
-  /** Update the current principal's metadata. */
-  async updateMe(opts: PatchMeOptions): Promise<Principal> {
-    return this.request<Principal>("PATCH", "/me", opts);
-  }
-
-  /**
-   * Create a new API key for the current principal.
-   * The raw key is returned once — save it immediately.
-   */
-  async createKey(opts: CreateKeyOptions): Promise<PrincipalKeyCreateResult> {
-    return this.request<PrincipalKeyCreateResult>("POST", "/me/keys", opts);
-  }
-
-  /** Revoke one of the current principal's keys. Returns `false` if not found. */
-  async deleteKey(keyId: string): Promise<boolean> {
-    try {
-      await this.request("DELETE", `/me/keys/${encodeURIComponent(keyId)}`);
-      return true;
-    } catch (e) {
-      if (e instanceof SirrError && e.status === 404) return false;
-      throw e;
-    }
-  }
-
-  // ── Admin endpoints (master key only) ────────────────────────────────────────
-  // Also available as `sirr.orgs.*` and `sirr.principals.*`.
-
-  /** Create an org. Requires master key. */
-  async createOrg(opts: CreateOrgOptions): Promise<Org> {
-    return this.request<Org>("POST", "/orgs", opts);
-  }
-
-  /** List all orgs. Requires master key. */
-  async listOrgs(): Promise<Org[]> {
-    const data = await this.request<{ orgs: Org[] }>("GET", "/orgs");
-    return data.orgs;
-  }
-
-  /** Delete an org by ID. Requires master key. */
-  async deleteOrg(orgId: string): Promise<void> {
-    await this.request("DELETE", `/orgs/${encodeURIComponent(orgId)}`);
-  }
-
-  /** Create a principal within an org. Requires master key. */
-  async createPrincipal(orgId: string, opts: CreatePrincipalOptions): Promise<Principal> {
-    return this.request<Principal>("POST", `/orgs/${encodeURIComponent(orgId)}/principals`, opts);
-  }
-
-  /** List all principals in an org. Requires master key. */
-  async listPrincipals(orgId: string): Promise<Principal[]> {
-    const data = await this.request<{ principals: Principal[] }>(
-      "GET",
-      `/orgs/${encodeURIComponent(orgId)}/principals`,
-    );
-    return data.principals;
-  }
-
-  /** Delete a principal by ID. Requires master key. */
-  async deletePrincipal(orgId: string, principalId: string): Promise<void> {
-    await this.request(
-      "DELETE",
-      `/orgs/${encodeURIComponent(orgId)}/principals/${encodeURIComponent(principalId)}`,
-    );
-  }
-
-  /** Issue an API key for a principal. Requires master key. */
-  async createPrincipalKey(
-    orgId: string,
-    principalId: string,
-    opts: CreateKeyOptions,
-  ): Promise<PrincipalKeyCreateResult> {
-    return this.request<PrincipalKeyCreateResult>(
-      "POST",
-      `/orgs/${encodeURIComponent(orgId)}/principals/${encodeURIComponent(principalId)}/keys`,
-      opts,
-    );
-  }
-
-  /** Create a custom role within an org. Requires master key. */
-  async createRole(orgId: string, opts: CreateRoleOptions): Promise<Role> {
-    return this.request<Role>("POST", `/orgs/${encodeURIComponent(orgId)}/roles`, opts);
-  }
-
-  /** List all roles (built-in and custom) in an org. Requires master key. */
-  async listRoles(orgId: string): Promise<Role[]> {
-    const data = await this.request<{ roles: Role[] }>(
-      "GET",
-      `/orgs/${encodeURIComponent(orgId)}/roles`,
-    );
-    return data.roles;
-  }
-
-  /** Delete a custom role by name. Requires master key. */
-  async deleteRole(orgId: string, roleName: string): Promise<void> {
-    await this.request(
-      "DELETE",
-      `/orgs/${encodeURIComponent(orgId)}/roles/${encodeURIComponent(roleName)}`,
-    );
+    return result;
   }
 }

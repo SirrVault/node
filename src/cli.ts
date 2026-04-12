@@ -1,40 +1,33 @@
 #!/usr/bin/env node
 /**
- * Sirr CLI — thin Node.js wrapper for use via `npx sirr` or `npm i -g sirr`.
+ * Sirr CLI — thin Node.js wrapper for use via `npx @sirrlock/node` or `npm i -g @sirrlock/node`.
  *
- * Reads SIRR_SERVER (default: https://sirr.sirrlock.com), SIRR_TOKEN, and SIRR_ORG.
+ * Reads SIRR_SERVER (default: https://sirrlock.com) and SIRR_KEY.
  */
 
-import { SecretExistsError, SirrClient } from "./index";
+import { SirrClient, SirrError } from "./index";
 
-const server = process.env.SIRR_SERVER ?? "https://sirr.sirrlock.com";
-const token = process.env.SIRR_TOKEN ?? "";
-const envOrg = process.env.SIRR_ORG;
+const server = process.env.SIRR_SERVER ?? "https://sirrlock.com";
+const key = process.env.SIRR_KEY ?? "";
 
 function usage(): never {
   console.error(`
 Usage: sirr <command> [options]
 
 Commands:
-  push <value> [--ttl <secs>] [--reads <n>]
-  set KEY=value [--org <org>] [--ttl <secs>] [--reads <n>]
-  get <id|KEY> [--org <org>]
+  push <value> [--ttl <secs>] [--reads <n>] [--prefix <p>]
+  get <hash>
+  inspect <hash>
+  patch <hash> <value> [--ttl <secs>] [--reads <n>]
+  burn <hash>
+  audit <hash>
   list
-  delete KEY
-  prune
   health
-  audit [--since <ts>] [--action <action>] [--key <key>] [--limit <n>]
-  webhooks list
-  webhooks add <url> [--events <csv>]
-  webhooks remove <id>
-  keys list
-  keys create <label> [--valid-for <secs>]
-  keys remove <id>
+  version
 
 Environment:
-  SIRR_SERVER   Server URL (default: https://sirr.sirrlock.com)
-  SIRR_TOKEN    Bearer token
-  SIRR_ORG      Default org (used by set/get when --org is not passed)
+  SIRR_SERVER   Server URL (default: https://sirrlock.com)
+  SIRR_KEY      Bearer API key
 `);
   process.exit(1);
 }
@@ -45,13 +38,13 @@ export function parseArgs(argv: string[]): Record<string, string | number | bool
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] as string;
     if (arg.startsWith("--")) {
-      const key = arg.slice(2);
+      const k = arg.slice(2);
       const next = argv[i + 1];
       if (next && !next.startsWith("--")) {
-        result[key] = next;
+        result[k] = next;
         i++;
       } else {
-        result[key] = true;
+        result[k] = true;
       }
     } else {
       positional.push(arg);
@@ -67,7 +60,7 @@ async function main() {
   if (!subcmd) usage();
 
   const args = parseArgs(rest);
-  const client = new SirrClient({ server, token, org: envOrg });
+  const client = new SirrClient({ server, key });
 
   try {
     switch (subcmd) {
@@ -77,173 +70,87 @@ async function main() {
         break;
       }
 
-      case "push": {
-        const value = args._0 as string | undefined;
-        if (!value) usage();
-        const ttlArg = args.ttl as string | undefined;
-        const readsArg = args.reads as string | undefined;
-        const result = await client.push(value, {
-          ttl: ttlArg ? Number.parseInt(ttlArg, 10) : undefined,
-          reads: readsArg ? Number.parseInt(readsArg, 10) : undefined,
-        });
-        console.log(`✓ pushed — id: ${result.id}`);
+      case "version": {
+        const r = await client.version();
+        console.log(JSON.stringify(r));
         break;
       }
 
-      case "set": {
-        const target = args._0 as string | undefined;
-        if (!target) usage();
-        const ttlArg = args.ttl as string | undefined;
-        const readsArg = args.reads as string | undefined;
-        const orgArg = args.org as string | undefined;
-
-        if (!target.includes("=")) {
-          console.error("set: expected KEY=value");
-          process.exit(1);
-        }
-        const eqIdx = target.indexOf("=");
-        const key = target.slice(0, eqIdx);
-        const value = target.slice(eqIdx + 1);
-        const result = await client.set(key, value, {
-          org: orgArg,
-          ttl: ttlArg ? Number.parseInt(ttlArg, 10) : undefined,
-          reads: readsArg ? Number.parseInt(readsArg, 10) : undefined,
+      case "push": {
+        const value = args._0 as string | undefined;
+        if (!value) usage();
+        const result = await client.push(value, {
+          ttl_seconds: args.ttl ? Number(args.ttl) : undefined,
+          reads: args.reads ? Number(args.reads) : undefined,
+          prefix: args.prefix as string | undefined,
         });
-        console.log(`✓ set ${result.key}`);
+        console.log(result.hash);
         break;
       }
 
       case "get": {
-        const idOrKey = args._0 as string | undefined;
-        if (!idOrKey) usage();
-        const orgArg = args.org as string | undefined;
-        const value = await client.get(idOrKey, { org: orgArg });
+        const hash = args._0 as string | undefined;
+        if (!hash) usage();
+        const value = await client.get(hash);
         if (value === null) {
-          console.error("not found or expired");
+          console.error("gone");
           process.exit(1);
         }
         console.log(value);
         break;
       }
 
-      case "list": {
-        const metas = await client.list();
-        if (metas.length === 0) {
-          console.log("(no active secrets)");
-        } else {
-          for (const m of metas) {
-            console.log(
-              `  ${m.key} — reads: ${m.read_count}${m.max_reads != null ? `/${m.max_reads}` : ""}`,
-            );
-          }
+      case "inspect": {
+        const hash = args._0 as string | undefined;
+        if (!hash) usage();
+        const status = await client.inspect(hash);
+        if (status === null) {
+          console.error("gone");
+          process.exit(1);
         }
+        console.log(JSON.stringify(status, null, 2));
         break;
       }
 
-      case "delete": {
-        const key = args._0 as string | undefined;
-        if (!key) usage();
-        const existed = await client.delete(key);
-        console.log(existed ? `✓ deleted ${key}` : "not found");
+      case "patch": {
+        const hash = args._0 as string | undefined;
+        const value = args._1 as string | undefined;
+        if (!hash || !value) usage();
+        const result = await client.patch(hash, {
+          value,
+          ttl_seconds: args.ttl ? Number(args.ttl) : undefined,
+          reads: args.reads ? Number(args.reads) : undefined,
+        });
+        console.log(JSON.stringify(result, null, 2));
         break;
       }
 
-      case "prune": {
-        const n = await client.prune();
-        console.log(`pruned ${n} expired secret(s)`);
+      case "burn": {
+        const hash = args._0 as string | undefined;
+        if (!hash) usage();
+        await client.burn(hash);
+        console.log("burned");
         break;
       }
 
       case "audit": {
-        const events = await client.getAuditLog({
-          since: args.since ? Number(args.since) : undefined,
-          action: args.action as string | undefined,
-          key: args.key as string | undefined,
-          limit: args.limit ? Number(args.limit) : undefined,
-        });
-        if (events.length === 0) {
-          console.log("(no audit events)");
+        const hash = args._0 as string | undefined;
+        if (!hash) usage();
+        const result = await client.audit(hash);
+        console.log(JSON.stringify(result, null, 2));
+        break;
+      }
+
+      case "list": {
+        const secrets = await client.list();
+        if (secrets.length === 0) {
+          console.log("(no secrets)");
         } else {
-          for (const e of events) {
-            console.log(
-              `  [${e.timestamp}] ${e.action} key=${e.key ?? "-"} ip=${e.source_ip} ${e.success ? "ok" : "FAIL"}`,
-            );
+          for (const s of secrets) {
+            const reads = s.reads_remaining != null ? ` reads=${s.reads_remaining}` : "";
+            const burned = s.burned ? " [burned]" : "";
+            console.log(`  ${s.hash}${reads}${burned}`);
           }
-        }
-        break;
-      }
-
-      case "webhooks": {
-        const sub = args._0 as string | undefined;
-        if (!sub) usage();
-        switch (sub) {
-          case "list": {
-            const wh = await client.listWebhooks();
-            if (wh.length === 0) {
-              console.log("(no webhooks)");
-            } else {
-              for (const w of wh) {
-                console.log(`  ${w.id}  ${w.url}  [${w.events.join(",")}]`);
-              }
-            }
-            break;
-          }
-          case "add": {
-            const url = args._1 as string | undefined;
-            if (!url) usage();
-            const eventsArg = args.events as string | undefined;
-            const events = eventsArg ? eventsArg.split(",") : undefined;
-            const result = await client.createWebhook(url, { events });
-            console.log("webhook registered");
-            console.log(`  id:     ${result.id}`);
-            console.log(`  secret: ${result.secret}`);
-            break;
-          }
-          case "remove": {
-            const id = args._1 as string | undefined;
-            if (!id) usage();
-            await client.deleteWebhook(id);
-            console.log(`webhook ${id} removed`);
-            break;
-          }
-          default:
-            usage();
-        }
-        break;
-      }
-
-      case "keys": {
-        const sub = args._0 as string | undefined;
-        if (!sub) usage();
-        switch (sub) {
-          case "list": {
-            // No list-keys endpoint on the server API.
-            console.log("Key listing is not supported by the server API.");
-            break;
-          }
-          case "create": {
-            const name = args._1 as string | undefined;
-            if (!name) usage();
-            const validFor = args["valid-for"] as string | undefined;
-            const result = await client.createKey({
-              name,
-              valid_for_seconds: validFor ? Number(validFor) : undefined,
-            });
-            console.log("API key created");
-            console.log(`  id:  ${result.id}`);
-            console.log(`  key: ${result.key}`);
-            console.log(`  (save the key — it won't be shown again)`);
-            break;
-          }
-          case "remove": {
-            const id = args._1 as string | undefined;
-            if (!id) usage();
-            await client.deleteKey(id);
-            console.log(`API key ${id} removed`);
-            break;
-          }
-          default:
-            usage();
         }
         break;
       }
@@ -252,9 +159,9 @@ async function main() {
         usage();
     }
   } catch (e: unknown) {
-    if (e instanceof SecretExistsError) {
-      console.error(`conflict: ${(e as Error).message}`);
-      process.exit(2);
+    if (e instanceof SirrError) {
+      console.error(`error ${(e as SirrError).status}: ${(e as Error).message}`);
+      process.exit(1);
     }
     console.error((e as Error).message ?? String(e));
     process.exit(1);

@@ -5,13 +5,11 @@
 [![CI](https://github.com/sirrlock/node/actions/workflows/ci.yml/badge.svg)](https://github.com/sirrlock/node/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
-[![GitHub stars](https://img.shields.io/github/stars/sirrlock/node)](https://github.com/sirrlock/node)
-[![Last commit](https://img.shields.io/github/last-commit/sirrlock/node)](https://github.com/sirrlock/node)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Node.js client and npx CLI for [Sirr](https://github.com/sirrlock/sirr) — ephemeral secret management.**
+**Node.js client for [Sirr](https://github.com/sirrlock/sirr) — ephemeral secret vault.**
 
-Give AI agents exactly the credentials they need, for exactly as long as they need them. Read once and it's gone. Expired by time and you never have to clean anything up.
+Zero dependencies. Uses native `fetch`. Works in Node 18+, Deno, Bun, and edge runtimes.
 
 ## Install
 
@@ -19,199 +17,140 @@ Give AI agents exactly the credentials they need, for exactly as long as they ne
 npm install @sirrlock/node
 ```
 
-Or use without installing:
+## Quick Start
 
-```bash
-npx @sirrlock/node push "postgres://..." --reads 1 --ttl 1h
+```typescript
+import { SirrClient } from '@sirrlock/node'
+
+const sirr = new SirrClient({
+  server: 'http://localhost:7843',
+  key: process.env.SIRR_KEY,  // optional — omit for anonymous push
+})
+
+// Push a secret — returns { hash, url, expires_at, reads_remaining, owned }
+const { hash } = await sirr.push('postgres://...', { reads: 1, ttl_seconds: 3600 })
+
+// Read it back (consumes a read)
+const value = await sirr.get(hash)  // → 'postgres://...' or null if gone
+
+// Inspect metadata without consuming a read
+const status = await sirr.inspect(hash)
+// → { created, ttlExpires, readsRemaining, owned }
+
+// Update value (owner key required)
+await sirr.patch(hash, { value: 'new-value', reads: 5 })
+
+// Burn immediately
+await sirr.burn(hash)
+
+// Audit trail (owner key required)
+const { events } = await sirr.audit(hash)
+
+// List your secrets (authenticated)
+const secrets = await sirr.list()
 ```
 
 ## CLI
 
 ```bash
-# Push a public dead drop — returns a one-time URL
-sirr push "postgres://..." --reads 1 --ttl 1h
-# → https://sirr.sirrlock.com/s/abc123
+# Push
+sirr push "postgres://..." --reads 1 --ttl 3600 --prefix db-
 
-# Set an org-scoped named secret
-sirr set DB_URL "postgres://..." --org acme --reads 3 --ttl 24h
+# Read
+sirr get <hash>
 
-# Retrieve by ID (dead drop) or key (org-scoped)
-sirr get abc123
-sirr get DB_URL --org acme
+# Inspect (HEAD — no read consumed)
+sirr inspect <hash>
 
-# Manage
+# Patch (requires SIRR_KEY)
+sirr patch <hash> "new-value" --reads 5
+
+# Burn
+sirr burn <hash>
+
+# Audit (requires SIRR_KEY)
+sirr audit <hash>
+
+# List own secrets (requires SIRR_KEY)
 sirr list
-sirr delete API_KEY
-sirr prune
+
+# Server info
 sirr health
+sirr version
 ```
 
 Config via env vars:
 ```bash
-export SIRR_SERVER=https://sirr.sirrlock.com
-export SIRR_TOKEN=your-master-key
+export SIRR_SERVER=http://localhost:7843   # default: https://sirrlock.com
+export SIRR_KEY=your-api-key               # for authenticated operations
 ```
 
-## Programmatic API
+## API Reference
+
+### Constructor
 
 ```typescript
-import { SirrClient, SirrError, SecretExistsError } from '@sirrlock/node'
-
-const sirr = new SirrClient({
-  server: process.env.SIRR_SERVER ?? 'https://sirr.sirrlock.com',
-  token: process.env.SIRR_TOKEN!,
+new SirrClient(opts?: {
+  server?: string   // default: 'https://sirrlock.com'
+  key?: string      // Bearer API key. Omit for anonymous operations.
 })
-
-// Push a public dead drop — returns { id, url }
-const { id, url } = await sirr.push('sk-...', { ttl: 3600, reads: 1 })
-console.log(url)  // → https://sirr.sirrlock.com/s/abc123
-
-// Set an org-scoped named secret — throws SecretExistsError on conflict
-await sirr.set('DB_URL', 'postgres://...', { org: 'acme', ttl: 86400, reads: 3 })
-
-// Retrieve — routes by org presence
-const value = await sirr.get(id)                              // dead drop by ID
-const dbUrl = await sirr.get('DB_URL', { org: 'acme' })      // org-scoped by key
-
-// Pull all secrets into a plain object
-const secrets = await sirr.pullAll()
-
-// Inject all secrets as env vars for the duration of a callback
-await sirr.withSecrets(async () => {
-  // process.env.DB_URL is set here
-  await runAgentTask()
-})
-
-// Inspect metadata without consuming a read (HEAD request)
-const status = await sirr.check('DB_URL')
-// { status: 'active', readCount: 0, readsRemaining: 3, ... }
-
-// Delete immediately
-await sirr.delete('DB_URL')
-
-// List active secrets (metadata only — no values)
-const list = await sirr.list()
 ```
 
-### Multi-Tenant / Org Mode
+### Methods
 
-Org scoping is now per-call via the `org` option on `set()` and `get()`:
-
-```typescript
-// Set an org-scoped secret
-await sirr.set('DB_URL', 'postgres://...', { org: 'acme', reads: 1 })
-
-// Retrieve an org-scoped secret
-const value = await sirr.get('DB_URL', { org: 'acme' })
-
-// Audit, list, and webhook calls still support org at the client level
-const sirr = new SirrClient({
-  server: 'https://sirr.sirrlock.com',
-  token: process.env.SIRR_TOKEN!,
-  org: 'acme',
-})
-const events = await sirr.audit()
-```
-
-#### /me endpoints
-
-Manage the current principal's profile and API keys:
-
-```typescript
-const profile = await sirr.me()                                // GET /me
-await sirr.updateMe({ metadata: { team: 'platform' } })       // PATCH /me
-const key = await sirr.createKey({ name: 'ci' })              // POST /me/keys
-const revoked = await sirr.deleteKey(key.id)                   // DELETE /me/keys/{id} → boolean
-```
-
-#### Admin endpoints (master key only)
-
-Manage orgs, principals, and roles. Available both as flat methods and through
-namespaced sub-clients (`sirr.orgs.*`, `sirr.principals.*`, `sirr.webhooks.*`):
-
-```typescript
-// Orgs
-const org = await sirr.orgs.create({ name: 'acme' })  // or sirr.createOrg(...)
-const orgs = await sirr.orgs.list()                    // returns Org[]
-await sirr.orgs.delete(org.id)
-
-// Principals
-const p = await sirr.principals.create(org.id, { name: 'alice', role: 'writer' })
-const principals = await sirr.principals.list(org.id)  // returns Principal[]
-await sirr.principals.delete(org.id, p.id)
-
-// Roles — permissions is a letter string, not an array
-await sirr.createRole(org.id, { name: 'reader', permissions: 'rRlL' })
-await sirr.listRoles(org.id)
-await sirr.deleteRole(org.id, 'reader')
-
-// Webhooks
-const wh = await sirr.webhooks.create('https://example.com/hook')
-const webhooks = await sirr.webhooks.list()
-await sirr.webhooks.delete(wh.id)
-
-// Audit log
-const events = await sirr.audit({ action: 'secret.read', limit: 50 })
-```
+| Method | HTTP | Auth | Returns |
+|--------|------|------|---------|
+| `push(value, opts?)` | `POST /secret` | Optional | `SecretResponse` |
+| `get(hash)` | `GET /secret/{hash}` | No | `string \| null` |
+| `inspect(hash)` | `HEAD /secret/{hash}` | No | `SecretStatus \| null` |
+| `patch(hash, opts)` | `PATCH /secret/{hash}` | Required | `SecretResponse` |
+| `burn(hash)` | `DELETE /secret/{hash}` | Owner or anon | `void` |
+| `audit(hash)` | `GET /secret/{hash}/audit` | Required | `AuditResponse` |
+| `list()` | `GET /secrets` | Required | `SecretMetadata[]` |
+| `health()` | `GET /health` | No | `{ status }` |
+| `version()` | `GET /version` | No | `{ version }` |
 
 ### Error Handling
 
 ```typescript
-import { SirrError, SecretExistsError } from '@sirrlock/node'
+import { SirrClient, SirrError } from '@sirrlock/node'
 
+// get() and inspect() return null when secret is gone (410)
+const value = await sirr.get(hash)
+if (value === null) console.log('secret is gone')
+
+// All other errors throw SirrError
 try {
-  await sirr.set('DB_URL', 'postgres://...', { org: 'acme' })
+  await sirr.patch(hash, { value: 'new' })
 } catch (e) {
-  if (e instanceof SecretExistsError) {
-    // 409 — secret with this key already exists in the org
-    console.error('Secret already exists, use a different key or delete first')
-  } else if (e instanceof SirrError) {
+  if (e instanceof SirrError) {
     console.error(`API error ${e.status}: ${e.message}`)
+    // e.status: 401 (no auth), 404 (not found/wrong key), 410 (gone), 405 (anon patch)
   }
 }
 ```
 
 ## AI Workflows
 
-### LangChain.js tool with scoped credential
+### One-time credential for an agent
+
+```typescript
+const { hash } = await sirr.push(process.env.DB_URL!, { reads: 1 })
+// Pass hash to agent — burned after one read
+```
+
+### LangChain tool with ephemeral credential
 
 ```typescript
 import { DynamicTool } from 'langchain/tools'
 
 const dbTool = new DynamicTool({
   name: 'query_database',
-  description: 'Run a SQL query against the production database',
   func: async (query) => {
-    const connStr = await sirr.get('AGENT_DB')
-    if (!connStr) throw new Error('DB credential expired or burned')
+    const connStr = await sirr.get(hash)
+    if (!connStr) throw new Error('credential expired')
     return runQuery(connStr, query)
   },
-})
-```
-
-### Inject secrets into a subprocess
-
-```typescript
-await sirr.withSecrets(async () => {
-  await execa('python', ['agent.py'])
-})
-```
-
-### CI/CD: one-time deploy credential
-
-```typescript
-const { url } = await sirr.push(process.env.PERMANENT_TOKEN!, { reads: 1 })
-// Share the URL with the deploy script — burned after one read
-```
-
-### pytest-style fixture for Node.js tests
-
-```typescript
-beforeAll(async () => {
-  await sirr.withSecrets(async () => {
-    // All vault secrets set as process.env for the test suite
-    await runTestSuite()
-  })
 })
 ```
 
@@ -224,4 +163,4 @@ beforeAll(async () => {
 | [sirr (PyPI)](https://github.com/sirrlock/python) | Python SDK |
 | [Sirr.Client (NuGet)](https://github.com/sirrlock/dotnet) | .NET SDK |
 | [sirr.dev](https://sirr.dev) | Documentation |
-| [sirrlock.com](https://sirrlock.com) | Managed cloud + license keys |
+| [sirrlock.com](https://sirrlock.com) | Managed cloud |
